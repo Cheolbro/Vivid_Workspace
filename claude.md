@@ -45,6 +45,24 @@
 * 렌더링 완료 시 `C_HIGHLIGHT`(골드) 색상으로 상태창에 아래 정보 출력:
   - 총 소요 시간 / 신규 렌더 FX 수 / 캐시 재사용 수 / 전체 FX 합계
 
+### 3-E. 글로벌 FX 라이브러리 및 공유 에셋 통합 아키텍처 (2026-04 구현)
+
+> **핵심 원칙:** 모든 공용 리소스(영상, 시각효과 코드)는 `shared_assets/` 폴더 내에서 통합 관리된다.
+> FX 코드는 **심볼릭 링크**를 통해 모든 프로젝트가 단일 원본을 공유하며, 용량 낭비 없이 자산화한다.
+
+* **경로 상수** (`utils/theme.py`):
+  - `SHARED_FX_DIR = SHARED_ASSETS_DIR / "shared_fx"` — 글로벌 FX TSX 원본 저장 위치.
+  - 앱 시작 시 `shared_fx/` 폴더가 없으면 자동 생성 (`mkdir`).
+* **프로젝트 생성 시 심볼릭 링크** (`steps/step1.py > _setup_fx_symlink()`):
+  - `copytree` 직후 프로젝트 내 `remotion/src/components/fx/` 폴더를 삭제하고 `SHARED_FX_DIR`를 가리키는 심볼릭 링크로 대체.
+  - Windows 권한 오류 시 폴백(복사 방식)으로 진행하고 개발자 모드 활성화 안내.
+* **Custom FX 저장** (`steps/step4.py > _process_custom_fx()`):
+  - TSX 파일은 반드시 `SHARED_FX_DIR` 에 저장. 프로젝트 내부에 직접 저장하지 않는다.
+  - `fx_catalog.md` 경로 표기는 `src/components/fx/` 유지 (Remotion import 경로 = 심볼릭 링크 경유).
+* **Git 추적** (`shared_assets/.gitignore`):
+  - 미디어 바이너리(`.mp4`, `.mp3` 등) → 추적 제외.
+  - `shared_fx/*.tsx` → `!` 예외 규칙으로 Git 추적 허용 (FX 코드는 소스 자산).
+
 ## 4. 세부 매뉴얼 참조(External spec)
 작업의 종류에 따라 아래 문서를 열어서(읽고) 참조하십시오.
 * UI/UX: ui_ux_spec.md (화면/버전 로직/테마 컬러)
