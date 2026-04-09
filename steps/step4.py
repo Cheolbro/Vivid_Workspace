@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QDialog, QTextEdit, QFrame,
 )
 
-from utils.theme import C_HIGHLIGHT, C_SUCCESS, C_ERROR, C_BG_INPUT, C_BORDER, C_TEXT
+from utils.theme import C_HIGHLIGHT, C_SUCCESS, C_ERROR, C_BG_INPUT, C_BORDER, C_TEXT, SHARED_FX_DIR
 from utils.widgets import (
     make_title, make_divider, make_status_box,
     StatusLogger, DropZone,
@@ -80,11 +80,14 @@ def parse_plan_json(plan_path: Path) -> dict:
 def _process_custom_fx(plan: dict, remotion_dir: Path) -> tuple[dict, list[str]]:
     """
     effects[] 중 type=Custom 항목에 대해:
-    1) TSX 컴포넌트 생성 → fx_catalog.md 등재
+    1) TSX 컴포넌트를 글로벌 SHARED_FX_DIR 에 생성 → fx_catalog.md 등재
     2) specificProps 역주입
     반환: (updated_plan, generated_component_names)
+
+    저장 경로: shared_assets/shared_fx/ (심볼릭 링크로 모든 프로젝트가 공유)
     """
-    fx_dir    = remotion_dir / "src" / "components" / "fx"
+    fx_dir    = SHARED_FX_DIR   # 글로벌 경로로 강제
+    fx_dir.mkdir(parents=True, exist_ok=True)
     generated = []
 
     for eff in plan["effects"]:

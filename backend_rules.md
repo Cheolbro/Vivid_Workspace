@@ -113,6 +113,41 @@
       - 총 소요 시간 / 신규 렌더 FX 수 / 캐시 재사용 수(Diff-Check 절약분) / 전체 FX 합계
     - 구현: `_render_start_time` (float), `_render_done_count`, `_skip_count` 인스턴스 변수로 추적.
 
+12. **글로벌 FX 라이브러리 및 공유 에셋 통합 아키텍처 (2026-04 구현):**
+
+    > **핵심 원칙:** 모든 공용 리소스(영상, 시각효과 코드)는 `shared_assets/` 폴더 내에서 통합 관리된다.
+    > FX 코드는 **심볼릭 링크(Symbolic Link)**를 통해 모든 프로젝트가 단일 원본을 공유한다.
+
+    **폴더 구조:**
+    ```
+    Vivid_Workspace/
+    ├── shared_assets/
+    │   ├── shared_fx/          ← 글로벌 FX TSX 원본 (Git 추적 O)
+    │   │   ├── RainFX.tsx
+    │   │   └── ...
+    │   ├── bumper.mp4          ← 채널 공용 영상 (Git 추적 X)
+    │   └── .gitignore          ← *.tsx 추적 허용, *.mp4 등 제외
+    └── {ProjectName}/
+        └── remotion/src/components/fx/  ← shared_fx/ 를 가리키는 심볼릭 링크
+    ```
+
+    **심볼릭 링크 구축 (`steps/step1.py > _setup_fx_symlink()`):**
+    - 프로젝트 폴더 생성(`copytree`) 직후 자동 실행.
+    - 프로젝트 내 `remotion/src/components/fx/` 폴더를 삭제.
+    - `os.symlink(SHARED_FX_DIR, fx_dir, target_is_directory=True)` 로 심볼릭 링크 생성.
+    - **Windows 권한 처리:** `OSError` 발생 시 폴백으로 `shared_fx/` 내용을 복사하고 안내 메시지 출력.
+      (해결: Windows '개발자 모드' 활성화 또는 PowerShell 관리자 권한 실행)
+    - 링크 대상 `SHARED_FX_DIR`가 없으면 자동 생성 (`mkdir(parents=True, exist_ok=True)`).
+
+    **Custom FX 저장 경로 (`steps/step4.py > _process_custom_fx()`):**
+    - Custom FX TSX 파일은 **반드시 `SHARED_FX_DIR`(`shared_assets/shared_fx/`)에 저장**.
+    - 프로젝트별 `fx_dir`에 직접 저장하지 않는다.
+    - `fx_catalog.md` 경로 표기는 `src/components/fx/{fileName}` 유지 (심볼릭 링크를 통한 Remotion import 경로).
+
+    **Git 추적 규칙 (`shared_assets/.gitignore`):**
+    - `*.mp4`, `*.mp3`, `*.webm` 등 미디어 바이너리 → 추적 제외.
+    - `shared_fx/`, `shared_fx/**`, `shared_fx/*.tsx` → `!` 예외 규칙으로 명시적 추적 허용.
+
 
 ## 2. UI/UX 및 기능 요구사항
 

@@ -11,6 +11,10 @@ from pathlib import Path
 ROOT_DIR          = Path(__file__).parent.parent          # Vivid_Workspace/
 TEMPLATE_DIR      = ROOT_DIR / "Project_templete"
 SHARED_ASSETS_DIR = ROOT_DIR / "shared_assets"           # 채널 공용 에셋 (bumper 등)
+SHARED_FX_DIR     = SHARED_ASSETS_DIR / "shared_fx"      # 글로벌 FX 라이브러리 (심볼릭 링크 대상)
+
+# 앱 시작 시 shared_fx 폴더가 없으면 자동 생성
+SHARED_FX_DIR.mkdir(parents=True, exist_ok=True)
 
 # ──────────────────────────────────────────────
 # 테마 컬러 (ui_ux_spec.md)

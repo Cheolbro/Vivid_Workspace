@@ -5,6 +5,7 @@ steps/step1.py
   - NEXT 버튼 → 2단계 이동
 """
 
+import os
 import re
 import shutil
 from pathlib import Path
@@ -14,7 +15,7 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QStackedWidget,
 )
 
-from utils.theme import ROOT_DIR, TEMPLATE_DIR, C_HIGHLIGHT
+from utils.theme import ROOT_DIR, TEMPLATE_DIR, SHARED_FX_DIR, C_HIGHLIGHT
 from utils.widgets import make_title, make_divider, make_status_box, StatusLogger
 
 
@@ -106,6 +107,9 @@ class Step1Widget(QWidget):
             self._log.error(f"폴더 생성 중 오류:\n{e}")
             return
 
+        # ── 글로벌 FX 심볼릭 링크 구축 ──────────────────────────────
+        self._setup_fx_symlink(target)
+
         self._project_dir = target
         self._log.success(
             f"프로젝트 폴더가 생성되었습니다.\n"
@@ -115,6 +119,57 @@ class Step1Widget(QWidget):
         self._next_btn.setEnabled(True)
         self._folder_input.setEnabled(False)
         self._create_btn.setEnabled(False)
+
+    def _setup_fx_symlink(self, project_dir: Path):
+        """
+        프로젝트 내 remotion/src/components/fx/ 폴더를 삭제하고
+        글로벌 shared_assets/shared_fx/ 를 가리키는 심볼릭 링크로 대체.
+
+        Windows 주의사항:
+          - 심볼릭 링크 생성은 관리자 권한 또는 개발자 모드 활성화가 필요.
+          - 권한 오류(OSError) 발생 시 기존 복사본을 유지하고 안내 메시지 출력.
+        """
+        fx_dir  = project_dir / "remotion" / "src" / "components" / "fx"
+        link_target = SHARED_FX_DIR   # 절대 경로 → 심볼릭 링크 대상
+
+        # shared_fx 폴더 보장 (theme.py 에서 생성되지만 이중 확인)
+        link_target.mkdir(parents=True, exist_ok=True)
+
+        # ① 기존 복사된 fx/ 폴더 삭제
+        if fx_dir.exists() or fx_dir.is_symlink():
+            try:
+                if fx_dir.is_symlink():
+                    fx_dir.unlink()
+                else:
+                    shutil.rmtree(str(fx_dir))
+            except Exception as e:
+                self._log.error(f"[FX 링크] 기존 fx/ 폴더 삭제 실패:\n{e}")
+                return
+
+        # ② 심볼릭 링크 생성 (directory=True: Windows 디렉토리 심링크)
+        try:
+            os.symlink(str(link_target), str(fx_dir), target_is_directory=True)
+            self._log.info(
+                f"[FX 링크] 글로벌 FX 라이브러리 연결 완료\n"
+                f"  {fx_dir}\n  → {link_target}"
+            )
+        except OSError as e:
+            # Windows 권한 부족 시 → 기존 복사본 방식으로 폴백
+            self._log.warning(
+                f"[FX 링크] 심볼릭 링크 생성 실패 (권한 부족).\n"
+                f"  오류: {e}\n"
+                "  해결 방법: Windows '개발자 모드'를 활성화하거나\n"
+                "  PowerShell을 관리자 권한으로 실행하세요.\n"
+                "  이번 프로젝트는 복사본 방식으로 진행됩니다."
+            )
+            # 폴백: shared_fx 내용을 fx_dir 로 복사
+            try:
+                if any(link_target.iterdir()):
+                    shutil.copytree(str(link_target), str(fx_dir))
+                else:
+                    fx_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                fx_dir.mkdir(parents=True, exist_ok=True)
 
     def _go_next(self):
         step2 = self._stack.widget(1)

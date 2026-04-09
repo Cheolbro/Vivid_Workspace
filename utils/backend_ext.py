@@ -274,7 +274,14 @@ def generate_custom_fx_component(effect: dict, fx_dir: Path) -> dict:
 
 
 def update_fx_catalog(catalog_path: Path, info: dict) -> None:
-    """fx_catalog.md에 신규 컴포넌트 한 행 등재 (중복 방지)"""
+    """
+    fx_catalog.md에 신규 컴포넌트 한 행 등재 (중복 방지).
+
+    카탈로그 내 경로는 `src/components/fx/{fileName}` 으로 기술한다.
+    물리적 파일은 shared_assets/shared_fx/ 에 저장되지만,
+    각 프로젝트의 remotion/src/components/fx/ 는 심볼릭 링크로 연결되므로
+    Remotion import 경로 관점에서는 동일하다.
+    """
     text = catalog_path.read_text(encoding="utf-8") if catalog_path.exists() else ""
     if info["componentName"] in text:
         return
