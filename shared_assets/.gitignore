@@ -1,0 +1,8 @@
+# shared_assets/ 폴더는 git으로 추적하되,
+# 실제 미디어 파일(용량 큰 바이너리)은 제외한다.
+*.mp4
+*.mov
+*.avi
+*.mp3
+*.wav
+*.webm
