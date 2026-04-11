@@ -12,6 +12,14 @@ Project_templete/remotion/node_modules/
 node_modules/
 # 개인 대본 파일
 input/
+# 미디어 바이너리 (개별 프로젝트 에셋 — git 추적 불필요)
+*.mp4
+*.mp3
+*.jpeg
+*.jpg
+*.png
+*.webm
+*.pdf
 
 # --- Generated Files ---
 storyboard.pdf
