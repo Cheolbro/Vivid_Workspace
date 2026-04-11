@@ -23,6 +23,7 @@ from pathlib import Path
 _SEP_PATTERNS = [
     re.compile(r'^\[본문\]',              re.IGNORECASE),
     re.compile(r'^\[body\]',              re.IGNORECASE),
+    re.compile(r'^==\s*(본문|body)\s*==$', re.IGNORECASE),   # ==Body== / ==본문==
     re.compile(r'^-{3,}$'),
     re.compile(r'^={3,}$'),
     re.compile(r'^#{1,3}\s*(본문|body)',  re.IGNORECASE),
@@ -49,7 +50,11 @@ def parse_script(text: str) -> tuple[str, str]:
             "script.txt 안에 [본문], ---, === 등의 구분자 줄이 있어야 합니다."
         )
 
-    intro = "\n".join(lines[:sep_idx]).strip()
+    # 인트로 영역에서 ==Intro== / [인트로] 등 헤더 줄 제거
+    _INTRO_HEADER = re.compile(r'^(==\s*(intro|인트로)\s*==|\[인트로\]|\[intro\])', re.IGNORECASE)
+    intro_lines = [l for l in lines[:sep_idx] if not _INTRO_HEADER.match(l.strip())]
+
+    intro = "\n".join(intro_lines).strip()
     body  = "\n".join(lines[sep_idx + 1:]).strip()
     return intro, body
 

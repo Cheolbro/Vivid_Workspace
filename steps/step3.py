@@ -64,11 +64,17 @@ class WatchdogWorker(QObject):
     def start_watch(self):
         """워커 진입점 (QThread.started 시그널에 연결)"""
         self._running = True
-        self._seen    = {f.name for f in self._downloads_dir.iterdir() if f.is_file()}
+        # 시작 시점의 파일 + 폴더 스냅샷 (이미 존재하는 것은 무시)
+        self._seen      = {f.name for f in self._downloads_dir.iterdir() if f.is_file()}
+        self._seen_dirs: set[str] = {
+            d.name for d in self._downloads_dir.iterdir() if d.is_dir()
+        }
+        self._watched_subdirs: set[Path] = set()   # 감시 중인 하위 폴더
 
         while self._running:
             try:
                 self._scan()
+                self._scan_new_subdirs()
             except Exception as e:
                 self.error_occurred.emit(str(e))
             time.sleep(0.8)
@@ -85,20 +91,48 @@ class WatchdogWorker(QObject):
         self._vid_count = vid
 
     def _scan(self):
-        """다운로드 폴더에서 신규 파일 감지 및 이동"""
-        for f in self._downloads_dir.iterdir():
+        """다운로드 폴더(루트)에서 신규 파일 감지 및 이동"""
+        self._scan_dir(self._downloads_dir, self._seen)
+
+    def _scan_new_subdirs(self):
+        """Watchdog 활성화 이후 새로 생긴 하위 폴더를 감지하여 감시 추가"""
+        for item in self._downloads_dir.iterdir():
+            if not item.is_dir():
+                continue
+            if item.name in self._seen_dirs:
+                continue
+            # 새 폴더 발견 → 감시 목록에 추가
+            self._seen_dirs.add(item.name)
+            self._watched_subdirs.add(item)
+            self.error_occurred.emit(f"[Watchdog] 새 폴더 감지 — '{item.name}' 내부도 감시합니다.")
+
+        # 이미 감시 중인 하위 폴더 내부도 스캔
+        for sub in list(self._watched_subdirs):
+            if not sub.exists():
+                self._watched_subdirs.discard(sub)
+                continue
+            seen_key = f"__sub__{sub.name}"
+            if seen_key not in self.__dict__:
+                self.__dict__[seen_key] = {
+                    f.name for f in sub.iterdir() if f.is_file()
+                }
+            self._scan_dir(sub, self.__dict__[seen_key])
+
+    def _scan_dir(self, directory: Path, seen: set):
+        """지정 디렉토리에서 신규 이미지/영상 파일 감지 및 이동 (공통 로직)"""
+        for f in directory.iterdir():
             if not f.is_file():
                 continue
             if f.suffix.lower() in self.TEMP_EXT:
                 continue
-            if f.name in self._seen:
+            if f.name in seen:
                 continue
 
             # 파일 쓰기가 완료됐는지 안정화 대기
             if not self._is_stable(f):
                 continue
 
-            self._seen.add(f.name)
+            seen.add(f.name)
             ext = f.suffix.lower()
 
             if ext in self.IMAGE_EXT:
@@ -615,7 +649,7 @@ class Step3Widget(QWidget):
 
         # ── 섹션 B: 파일 업로드 (vrew / mp3 / srt) ──────────
         sec_b_lbl = QLabel(
-            "[ STEP B ]  원본.vrew  /  TTS.mp3  /  Subtitle.srt  업로드"
+            "[ STEP B ]  원본.vrew  /  TTS.mp3  /  Subtitle.srt  /  intro_cue.txt  업로드"
         )
         sec_b_lbl.setStyleSheet(
             f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;"
@@ -624,11 +658,11 @@ class Step3Widget(QWidget):
 
         self._drop_zone = DropZone(
             label=(
-                "원본.vrew · TTS.mp3 · Subtitle.srt\n"
-                "3개 파일을 한꺼번에 끌어다 놓으세요\n"
+                "원본.vrew · TTS.mp3 · Subtitle.srt · intro_cue.txt\n"
+                "파일을 한꺼번에 끌어다 놓으세요\n"
                 "(또는 아래 버튼으로 선택)"
             ),
-            accepted_ext=(".vrew", ".mp3", ".srt"),
+            accepted_ext=(".vrew", ".mp3", ".srt", ".txt"),
             multi=True,
         )
         self._drop_zone.file_dropped.connect(self._on_file_received)
@@ -639,6 +673,7 @@ class Step3Widget(QWidget):
         row_b.setSpacing(10)
 
         self._upload_btn = QPushButton("📁  파일 업로드")
+        self._upload_btn.setToolTip("원본.vrew / TTS.mp3 / Subtitle.srt / intro_cue.txt")
         self._upload_btn.clicked.connect(self._on_upload_click)
         row_b.addWidget(self._upload_btn)
 
@@ -651,14 +686,14 @@ class Step3Widget(QWidget):
         root.addLayout(row_b)
 
         # 업로드 현황 레이블
-        self._upload_status_lbl = QLabel("업로드 현황:  vrew ✗  /  mp3 ✗  /  srt ✗")
+        self._upload_status_lbl = QLabel("업로드 현황:  vrew ✗  /  mp3 ✗  /  srt ✗  /  cue ✗")
         self._upload_status_lbl.setStyleSheet("color:#555555; font-size:12px;")
         root.addWidget(self._upload_status_lbl)
 
         # 파일명 정규화 안내
         norm_hint = QLabel(
             "※ 업로드 시 파일명에 상관없이 "
-            "원본.vrew · TTS.mp3 · Subtitle.srt 로 자동 변환되어 저장됩니다."
+            "원본.vrew · TTS.mp3 · Subtitle.srt · intro_cue.txt 로 자동 변환되어 저장됩니다."
         )
         norm_hint.setStyleSheet(
             f"color:{C_HIGHLIGHT}; font-size:11px;"
@@ -703,9 +738,43 @@ class Step3Widget(QWidget):
         self._refresh_upload_label()
         if path:
             self._log.highlight(f"프로젝트: {path.name}")
-            self._log.info(
-                "Flow 웹사이트에서 인트로 이미지를 생성 후 Watchdog을 활성화 하세요."
-            )
+            # ── 기존 파일 복원 ──────────────────────────────────
+            asset_dir    = path / "asset"
+            timeline     = asset_dir / "base_timeline.json"
+            tts          = asset_dir / "TTS.mp3"
+            srt          = asset_dir / "Subtitle.srt"
+
+            if timeline.exists():
+                # 타임라인까지 완료 → NEXT 활성화
+                existing = []
+                if tts.exists(): existing.append("TTS.mp3")
+                if srt.exists(): existing.append("Subtitle.srt")
+                if existing:
+                    self._drop_zone.set_ready(", ".join(existing))
+                    for f in existing:
+                        self._uploaded[f.split(".")[1].lower()] = True
+                self._timeline_btn.setEnabled(False)
+                self._next_btn.setEnabled(True)
+                self._log.success("타임라인 JSON이 이미 생성된 프로젝트입니다.")
+                self._log.info("NEXT 버튼으로 다음 단계로 넘어가세요.")
+            elif tts.exists() or srt.exists():
+                # 파일 업로드는 됐으나 타임라인 미생성
+                existing = []
+                if tts.exists(): existing.append("TTS.mp3")
+                if srt.exists(): existing.append("Subtitle.srt")
+                self._drop_zone.set_ready(", ".join(existing))
+                for f in existing:
+                    self._uploaded[f.split(".")[1].lower()] = True
+                if tts.exists() and srt.exists():
+                    self._timeline_btn.setEnabled(True)
+                self._log.success(f"업로드된 파일 확인: {', '.join(existing)}")
+                self._log.info("'타임라인 JSON 생성' 버튼을 눌러주세요.")
+            else:
+                self._log.info(
+                    "Flow 웹사이트에서 인트로 이미지를 생성 후 Watchdog을 활성화 하세요."
+                )
+            # 에셋 카운터 동기화
+            self._sync_counts()
 
     # ── §A: Watchdog ────────────────────────────────────────
 
@@ -883,9 +952,9 @@ class Step3Widget(QWidget):
     def _on_upload_click(self):
         paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "파일 선택 (원본.vrew / TTS.mp3 / Subtitle.srt)",
+            "파일 선택 (원본.vrew / TTS.mp3 / Subtitle.srt / intro_cue.txt)",
             str(Path.home()),
-            "지원 파일 (*.vrew *.mp3 *.srt)",
+            "지원 파일 (*.vrew *.mp3 *.srt *.txt)",
         )
         for p in paths:
             self._on_file_received(p)
@@ -894,7 +963,15 @@ class Step3Widget(QWidget):
         src = Path(src_path)
         ext = src.suffix.lower()
 
-        if ext not in (".vrew", ".mp3", ".srt"):
+        # .txt 는 intro_cue.txt 만 허용
+        if ext == ".txt" and src.stem.lower() != "intro_cue":
+            self._log.error(
+                f"'{src.name}'은(는) 허용되지 않는 txt 파일입니다.\n"
+                "'intro_cue.txt' 파일만 업로드 가능합니다."
+            )
+            return
+
+        if ext not in (".vrew", ".mp3", ".srt", ".txt"):
             self._log.error(f"'{src.name}'은(는) 지원되지 않는 파일 형식입니다.")
             return
 
@@ -912,9 +989,10 @@ class Step3Widget(QWidget):
 
         # 표준화된 저장 이름 결정 (파일명에 상관없이 표준명으로 정규화)
         name_map = {
-            ".vrew": "원본.vrew",      # 어떤 이름이라도 원본.vrew로 저장 (Overwrite 허용)
+            ".vrew": "원본.vrew",
             ".mp3":  "TTS.mp3",
             ".srt":  "Subtitle.srt",
+            ".txt":  "intro_cue.txt",
         }
         dest = asset_dir / name_map[ext]
 
@@ -943,17 +1021,21 @@ class Step3Widget(QWidget):
             f"업로드 현황:&nbsp;&nbsp;"
             f"vrew {mark('.vrew')}&nbsp;&nbsp;/&nbsp;&nbsp;"
             f"mp3 {mark('.mp3')}&nbsp;&nbsp;/&nbsp;&nbsp;"
-            f"srt {mark('.srt')}"
+            f"srt {mark('.srt')}&nbsp;&nbsp;/&nbsp;&nbsp;"
+            f"cue {mark('.txt')}"
         )
         self._upload_status_lbl.setTextFormat(Qt.TextFormat.RichText)
 
     def _check_all_uploaded(self):
-        if all(ext in self._uploaded for ext in (".vrew", ".mp3", ".srt")):
-            self._drop_zone.set_ready(
-                "원본.vrew  /  TTS.mp3  /  Subtitle.srt  —  3개 파일 확인됨"
-            )
+        # srt 필수, 나머지는 선택 — srt 있으면 타임라인 생성 가능
+        if ".srt" in self._uploaded and ".mp3" in self._uploaded:
+            ready_names = []
+            if ".vrew" in self._uploaded: ready_names.append("원본.vrew")
+            ready_names += ["TTS.mp3", "Subtitle.srt"]
+            if ".txt" in self._uploaded:  ready_names.append("intro_cue.txt")
+            self._drop_zone.set_ready("  /  ".join(ready_names))
             self._log.success(
-                "파일 3개 모두 확인되었습니다. 타임라인을 생성해주세요."
+                f"{len(ready_names)}개 파일 확인되었습니다. 타임라인을 생성해주세요."
             )
             self._timeline_btn.setEnabled(True)
 

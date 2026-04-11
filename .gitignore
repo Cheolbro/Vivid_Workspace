@@ -1,17 +1,31 @@
 # --- Sensitive Data ---
-config.json               # Gemini API 키 포함
+# Gemini API 키 / Google OAuth 시크릿 / 토큰 캐시
+config.json
+client_secret.json
+token.json
 
 # --- Assets & Heavy Files ---
-asset/                    # 원본 영상, 이미지, 목소리 등 대용량 파일
-Project_templete/remotion/node_modules/ # 리모션 라이브러리
+# 원본 영상, 이미지, 목소리 등 대용량 파일
+asset/
+# 리모션 라이브러리
+Project_templete/remotion/node_modules/
 node_modules/
-input/                    # 개인 대본 파일
+# 개인 대본 파일
+input/
+# 미디어 바이너리 (개별 프로젝트 에셋 — git 추적 불필요)
+*.mp4
+*.mp3
+*.jpeg
+*.jpg
+*.png
+*.webm
+*.pdf
 
 # --- Generated Files ---
-storyboard.pdf            # 생성된 스토리보드
-base_timeline.json        # 생성된 타임라인
-remotion_plan.json        # 생성된 기획안
-최종_v*.vrew               # 결과물 파일
+storyboard.pdf
+base_timeline.json
+remotion_plan.json
+최종_v*.vrew
 
 # --- Python Artifacts ---
 __pycache__/

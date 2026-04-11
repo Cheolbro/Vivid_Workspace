@@ -23,7 +23,7 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from utils.theme import SHARED_ASSETS_DIR
+from utils.theme import SHARED_ASSETS_DIR, SHARED_FX_DIR
 
 # ══════════════════════════════════════════════
 # 공용 에셋 경로 해석 (Shared Asset Resolver)
@@ -275,7 +275,7 @@ def generate_custom_fx_component(effect: dict, fx_dir: Path) -> dict:
 
 def update_fx_catalog(catalog_path: Path, info: dict) -> None:
     """
-    fx_catalog.md에 신규 컴포넌트 한 행 등재 (중복 방지).
+    fx_catalog.txt에 신규 컴포넌트 한 행 등재 (중복 방지).
 
     카탈로그 내 경로는 `src/components/fx/{fileName}` 으로 기술한다.
     물리적 파일은 shared_assets/shared_fx/ 에 저장되지만,
@@ -303,100 +303,417 @@ def update_fx_catalog(catalog_path: Path, info: dict) -> None:
 # §5-B  Composition.tsx / Root.tsx 자동 생성
 # ══════════════════════════════════════════════
 
-def generate_compositions(plan: dict, remotion_dir: Path) -> None:
+# NOTE: _FX_KEYWORD_MAP 및 _resolve_custom_component() 는 제거됨 (2026-04).
+# Custom FX 매칭은 SemanticMatchWorker(Gemini 기반)가 담당하며,
+# "_componentName" 필드가 plan에 역주입된 후 _build_slide_tsx()가 읽는다.
+
+# ── 하위 호환을 위해 남아있는 임시 심볼 (사용하지 않음) ────────────
+# 아무 키워드도 없이 제거하면 기존 import가 깨질 수 있어 빈 dict 유지
+_FX_KEYWORD_MAP: dict[str, list[str]] = {
+    "golden": ["황금", "골든", "golden"],
+    "ray":    ["빛줄기", "광선", "ray", "beam", "light"],
+    "money":  ["동전", "돈", "코인", "money", "coin"],
+    "rain":   ["비", "떨어지", "낙하", "rain", "fall", "drop"],
+    "fire":   ["불꽃", "화염", "fire", "flame"],
+    "glow":   ["발광", "글로우", "glow", "shine", "아우라"],
+    "particle": ["파티클", "먼지", "particle", "dust", "sparkle"],
+    "confetti": ["색종이", "confetti"],
+    "snow":   ["눈", "설", "snow"],
+    # 원유/오일 계열
+    "oil":    ["원유", "석유", "기름", "oil", "petroleum", "crude"],
+    "fill":   ["차오르", "가득", "채워", "홀로그램", "fill", "rising", "level", "flow"],
+    "leak":   ["유출", "흘러", "누출", "증발", "파티클이", "leak", "spill", "escape", "evaporate"],
+    # 기타 UI FX
+    "warning": ["경고", "위험", "주의", "알람", "warning", "danger", "alert"],
+    "underline": ["밑줄", "강조선", "underline"],
+    "highlight": ["하이라이트", "형광", "highlight"],
+    "typewriter": ["타이핑", "타자기", "typewriter"],
+    "blur":   ["블러", "흐림", "blur", "reveal"],
+    "progress": ["진행", "progress"],
+    "bar":    ["막대", "차트", "bar", "chart"],
+    "count":  ["카운트", "숫자", "count", "counter"],
+    "vignette": ["비네트", "vignette"],
+    "flash":  ["번쩍", "플래시", "flash"],
+    "focus":  ["초점", "포커스", "focus", "ring"],
+    "screen": ["화면", "스크린", "screen"],
+    "change": ["변화", "증감", "change", "indicator"],
+    "data":   ["데이터", "수치", "data", "label"],
+}
+
+
+# _resolve_custom_component() 는 2026-04에 제거됨.
+# 대체: SemanticMatchWorker (Gemini 기반 시맨틱 매칭) → _componentName 역주입 후
+#       _build_slide_tsx() 에서 eff["_componentName"] 직접 읽음.
+
+
+import re as _re
+
+
+# ──────────────────────────────────────────────────────────────
+# §5-B 헬퍼: 슬라이드 그룹핑 / 배경이미지 / 자막 구간 추출
+# ──────────────────────────────────────────────────────────────
+
+def _group_effects_by_slide(effects: list[dict]) -> dict[str, list[dict]]:
     """
-    remotion_plan.json → Root.tsx + src/compositions/FX_<id>.tsx 생성.
-    각 FX 항목은 독립 Composition (VividFX_<id>)으로 분리 렌더링 가능.
+    effect ID에서 슬라이드 prefix를 추출하여 그룹핑.
+      예) p1_1_txt, p1_2_fx, p1_3_txt  →  {"p1": [...]}
+    Video 타입은 Composition 대상이 아니므로 제외.
+    정렬: p1, p2, p3 … (자릿수 → 이름 순)
+    """
+    groups: dict[str, list[dict]] = {}
+    for eff in effects:
+        if eff.get("type") == "Video":
+            continue
+        eid = eff.get("id", "")
+        m = _re.match(r'^(p\d+)', eid)
+        slide = m.group(1) if m else "misc"
+        groups.setdefault(slide, []).append(eff)
+    return dict(sorted(groups.items(), key=lambda x: (len(x[0]), x[0])))
+
+
+def _find_background_image(
+    slide_id: str,
+    asset_dir: Path,
+    public_dir: Path | None = None,
+) -> str | None:
+    """
+    슬라이드 번호(p1→1)에 대응하는 배경 이미지 파일명 반환.
+    public_dir이 주어지면 remotion/public/ 으로 자동 복사한다.
+    (Remotion <Img>는 public/ 기준으로 경로를 해석)
+    """
+    m = _re.match(r'^p(\d+)$', slide_id)
+    if not m:
+        return None
+    n = m.group(1)
+    for ext in (".jpeg", ".jpg", ".png", ".webp"):
+        src = asset_dir / f"image_{n}{ext}"
+        if src.exists():
+            fname = f"image_{n}{ext}"
+            if public_dir is not None:
+                public_dir.mkdir(parents=True, exist_ok=True)
+                dest = public_dir / fname
+                if not dest.exists():
+                    shutil.copy2(str(src), str(dest))
+            return fname
+    return None
+
+
+def _load_timeline(timeline_path: Path | None) -> list[dict]:
+    """base_timeline.json 로드. 항목 형식: {start, end, text}"""
+    if not timeline_path or not timeline_path.exists():
+        return []
+    try:
+        data = json.loads(timeline_path.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _get_subtitles_for_range(
+    timeline: list[dict],
+    slide_start_frame: int,
+    slide_end_frame: int,
+    fps: int,
+) -> list[dict]:
+    """
+    슬라이드 절대 프레임 구간에 해당하는 자막을 로컬 프레임 기준으로 변환하여 반환.
+    반환 형식: [{startFrame, endFrame, text}, ...]
+    """
+    s_sec = slide_start_frame / fps
+    e_sec = slide_end_frame   / fps
+    result = []
+    for entry in timeline:
+        t_start = float(entry.get("start", entry.get("startTime", 0)))
+        t_end   = float(entry.get("end",   entry.get("endTime",   t_start + 1)))
+        text    = str(entry.get("text", "")).strip()
+        if not text or t_end <= s_sec or t_start >= e_sec:
+            continue
+        local_s = max(0, round((t_start - s_sec) * fps))
+        local_e = max(local_s + 1, round((t_end   - s_sec) * fps))
+        result.append({"startFrame": local_s, "endFrame": local_e, "text": text})
+    return result
+
+
+# ── FX props 병합 헬퍼 ──────────────────────────────────────────────────────
+
+# Popup 전용 key — FX 컴포넌트에 전달하지 않는다.
+# width/height 는 OilFillFX 등 FX 컴포넌트도 사용하므로 제외하지 않음.
+_POPUP_ONLY_KEYS = frozenset({"src", "maxHeight"})
+
+
+def _merge_fx_props(eff: dict) -> dict:
+    """
+    effect 객체에서 FX 컴포넌트에 전달할 props dict 를 구성한다.
+
+    우선순위 (낮음 → 높음):
+      commonProps 전체 (Popup 전용 key 제외)
+        → specificProps 전체
+          → 최상위 'text' 필드 (Gemini가 Popup 형식으로 작성하는 경우 대비)
+
+    주의: Gemini는 text/fontSize 를 commonProps 또는 최상위 레벨에 넣는 경향이 있으므로
+          x·y 만 추출하던 기존 방식 대신 commonProps 전체를 포함한다.
+    """
+    cp = eff.get("commonProps", {})
+    sp = {
+        **{k: v for k, v in cp.items() if k not in _POPUP_ONLY_KEYS},
+        **eff.get("specificProps", {}),
+    }
+    # 최상위 'text' 필드 (Gemini가 Popup 규칙 따라 상위에 놓는 경우)
+    if "text" not in sp and eff.get("text"):
+        sp["text"] = eff["text"]
+    return sp
+
+
+def _props_to_jsx(props: dict) -> str:
+    """
+    Python dict → JSX 인라인 props 문자열.
+
+    repr() 대신 json.dumps()를 사용하여:
+      - 문자열: "텍스트"  →  {"텍스트"}  (큰따옴표, TS 친화적)
+      - 불리언: True/False  →  {true}/{false}  (JS 표기)
+      - 배열: [...]  →  {[...]}  (JSON 직렬화)
+      - null: None  →  {null}
+    """
+    parts = []
+    for k, v in props.items():
+        js_val = json.dumps(v, ensure_ascii=False)
+        parts.append(f"{k}={{{js_val}}}")
+    return " ".join(parts)
+
+
+def _build_slide_tsx(
+    slide_id: str,
+    effects: list[dict],
+    slide_start: int,
+    bg_src: str | None,
+    subtitles: list[dict],
+) -> str:
+    """
+    슬라이드 Composition TSX 코드 생성.
+
+    구조:
+      - previewMode=true  (Studio 기본): 배경이미지 + 자막 + FX
+      - previewMode=false (렌더링):      FX만 (투명 배경)
+    """
+    imports_set: set[str] = set()
+    imports_set.add('import React from "react";')
+    # Img + staticFile import 는 배경이미지 블록에서 추가 (staticFile 같이 묶기 위해)
+    if subtitles:
+        imports_set.add(
+            'import { SubtitleOverlay } from "../components/SubtitleOverlay";'
+        )
+
+    fx_lines: list[str] = []
+
+    for eff in effects:
+        etype       = eff.get("type", "Popup")
+        dur_f       = eff.get("durationFrames", 60)
+        abs_start   = eff.get("startFrame", 0)
+        local_start = abs_start - slide_start
+
+        if etype == "Popup":
+            src_img = eff.get("src", "")
+            text    = eff.get("text", "")
+            cp      = eff.get("commonProps", {})
+
+            if text and not src_img:
+                imports_set.add(
+                    'import { TextPopupElement } from "../components/TextPopupElement";'
+                )
+                x_val   = cp.get("x", 0)
+                y_val   = cp.get("y", 0)
+                fs_val  = cp.get("fontSize", "80px")
+                escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+                fx_lines.append(
+                    f'      <TextPopupElement text="{escaped}"'
+                    f' startFrame={{{local_start}}} durationFrames={{{dur_f}}}'
+                    f' x={{{x_val}}} y={{{y_val}}} fontSize="{fs_val}" />'
+                )
+            elif src_img:
+                imports_set.add(
+                    'import { PopupElement } from "../components/PopupElement";'
+                )
+                wval = cp.get("width", "70%")
+                mh   = cp.get("maxHeight", "70%")
+                fx_lines.append(
+                    f'      <PopupElement src="{src_img}"'
+                    f' startFrame={{{local_start}}} durationFrames={{{dur_f}}}'
+                    f' width="{wval}" maxHeight="{mh}" />'
+                )
+
+        elif etype == "Custom":
+            # 시맨틱 매칭이 완료된 경우에만 _componentName이 주입되어 있음.
+            # 매칭 미완료 시 해당 효과를 건너뜀 (경고 출력).
+            cn = eff.get("_componentName", "").strip()
+            if not cn:
+                print(
+                    f"[WARN] Custom FX '{eff.get('id')}' has no _componentName — skipped"
+                )
+                continue
+            fn  = eff.get("_componentFile", f"{cn}.tsx").replace(".tsx", "")
+            sp  = _merge_fx_props(eff)
+            p_s = _props_to_jsx(sp)
+            imports_set.add(f'import {{ {cn} }} from "../components/fx/{fn}";')
+            fx_lines.append(
+                f'      <{cn} startFrame={{{local_start}}}'
+                f' durationFrames={{{dur_f}}} {p_s} />'
+            )
+
+        elif (SHARED_FX_DIR / f"{etype}.tsx").exists():
+            # type = 컴포넌트명 직접 지정 (예: "GoldenRayFX", "HighlighterFX")
+            # fx_catalog.txt에 등록된 기존 효과를 Gemini가 이름으로 직접 참조하는 경우
+            cn  = etype
+            fn  = etype
+            sp  = _merge_fx_props(eff)
+            p_s = _props_to_jsx(sp)
+            imports_set.add(f'import {{ {cn} }} from "../components/fx/{fn}";')
+            fx_lines.append(
+                f'      <{cn} startFrame={{{local_start}}}'
+                f' durationFrames={{{dur_f}}} {p_s} />'
+            )
+
+    cname    = f"Slide_{slide_id}"
+    subs_str = json.dumps(subtitles, ensure_ascii=False)
+
+    # 배경이미지 import — sorted_imports 생성 전에 추가해야 반영됨
+    if bg_src:
+        imports_set.add('import { Img, staticFile } from "remotion";')
+
+    # import 정렬: React → Remotion → 컴포넌트 순
+    sorted_imports = sorted(imports_set, key=lambda s: (
+        0 if 'from "react"' in s else
+        1 if 'from "remotion"' in s else
+        2
+    ))
+
+    lines: list[str] = []
+    lines += sorted_imports
+    lines.append("")
+    lines.append("interface Props { previewMode?: boolean; }")
+    lines.append("")
+    lines.append(f"export const {cname}: React.FC<Props> = ({{ previewMode = false }}) => (")
+    lines.append(
+        '  <div style={{ position: "relative", width: "100%",'
+        ' height: "100%", background: "transparent" }}>'
+    )
+
+    # 배경이미지 (미리보기 전용)
+    # staticFile() 사용 → Remotion 4.x dev-server 정적 자산 경로 자동 해석
+    if bg_src:
+        lines.append("    {previewMode && (")
+        lines.append(f'      <Img src={{staticFile("{bg_src}")}} style={{{{')
+        lines.append(
+            '        position: "absolute", top: 0, left: 0,'
+            ' width: "100%", height: "100%",'
+            ' objectFit: "cover" as const, opacity: 0.85,'
+        )
+        lines.append("      }} />")
+        lines.append("    )}")
+
+    # FX 레이어 (항상)
+    lines += fx_lines
+
+    # 자막 (미리보기 전용)
+    if subtitles:
+        lines.append(f"    {{previewMode && <SubtitleOverlay subtitles={{{subs_str}}} />}}")
+
+    lines.append("  </div>")
+    lines.append(");")
+
+    return "\n".join(lines) + "\n"
+
+
+def generate_compositions(
+    plan: dict,
+    remotion_dir: Path,
+    timeline_path: Path | None = None,
+) -> None:
+    """
+    remotion_plan.json → 슬라이드별 Composition 생성.
+
+    각 슬라이드 Composition (VividSlide-p1 등):
+      - defaultProps.previewMode=true  → Studio에서 배경이미지+자막+FX 전체 미리보기
+      - 렌더링 시 previewMode=false 전달 → 투명 배경, FX만 출력
     """
     fps     = plan.get("fps", 30)
     w       = plan.get("width", 1920)
     h       = plan.get("height", 1080)
     effects = plan.get("effects", [])
 
+    asset_dir = remotion_dir.parent / "asset"
+
+    # Video 타입 파일 → remotion/public/ 복사 (기존 동작 유지)
+    for eff in effects:
+        if eff.get("type") == "Video":
+            src_name = eff.get("src", "")
+            if src_name:
+                resolved = resolve_asset(src_name, asset_dir)
+                if resolved:
+                    pub = remotion_dir / "public"
+                    pub.mkdir(parents=True, exist_ok=True)
+                    dest = pub / src_name
+                    if not dest.exists():
+                        shutil.copy2(str(resolved), str(dest))
+
+    # 슬라이드 그룹핑
+    slides   = _group_effects_by_slide(effects)
+    timeline = _load_timeline(timeline_path)
+
     comp_dir = remotion_dir / "src" / "compositions"
     comp_dir.mkdir(parents=True, exist_ok=True)
 
-    imports:  list[str] = []
-    comp_els: list[str] = []
+    root_imports: list[str] = []
+    root_comps:   list[str] = []
 
-    for eff in effects:
-        eid      = eff["id"]
-        etype    = eff.get("type", "Popup")
-        dur_f    = eff.get("durationFrames", 60)
-        cname    = f"Comp_{eid}"
-        comp_id  = f"VividFX_{eid}"
+    for slide_id, slide_effs in slides.items():
+        # 슬라이드 절대 프레임 범위
+        slide_start = min(e.get("startFrame", 0) for e in slide_effs)
+        slide_end   = max(
+            e.get("startFrame", 0) + e.get("durationFrames", 60)
+            for e in slide_effs
+        )
+        slide_dur = slide_end - slide_start
 
-        if etype == "Popup":
-            src_img   = eff.get("src", "")
-            cp        = eff.get("commonProps", {})
-            wval      = cp.get("width", "70%")
-            mh        = cp.get("maxHeight", "70%")
-            body = (
-                f'  <PopupElement src="{src_img}" startFrame={{0}}'
-                f' durationFrames={{{dur_f}}} width="{wval}" maxHeight="{mh}" />'
-            )
-            import_line = 'import { PopupElement } from "../components/PopupElement";'
-            tsx = (
-                'import React from "react";\n'
-                f'{import_line}\n\n'
-                f'export const {cname}: React.FC = () => (\n'
-                f'  <div style={{{{ position:"relative", width:"100%", height:"100%", background:"transparent" }}}}>\n'
-                f'{body}\n  </div>\n);\n'
-            )
+        # 배경이미지 (asset/ → remotion/public/ 자동 복사)
+        public_dir = remotion_dir / "public"
+        bg_src     = _find_background_image(slide_id, asset_dir, public_dir)
+        subtitles  = _get_subtitles_for_range(timeline, slide_start, slide_end, fps)
 
-        elif etype == "Custom":
-            cn   = eff.get("_componentName", "OverlayFX")
-            fn   = eff.get("_componentFile", f"{cn}.tsx").replace(".tsx", "")
-            sp   = eff.get("specificProps", {})
-            p_str = " ".join(f'{k}={{{repr(v)}}}' for k, v in sp.items())
-            body  = f'  <{cn} startFrame={{0}} durationFrames={{{dur_f}}} {p_str} />'
-            tsx = (
-                'import React from "react";\n'
-                f'import {{ {cn} }} from "../components/fx/{fn}";\n\n'
-                f'export const {cname}: React.FC = () => (\n'
-                f'  <div style={{{{ position:"relative", width:"100%", height:"100%", background:"transparent" }}}}>\n'
-                f'{body}\n  </div>\n);\n'
-            )
+        # TSX 생성
+        tsx = _build_slide_tsx(
+            slide_id=slide_id,
+            effects=slide_effs,
+            slide_start=slide_start,
+            bg_src=bg_src,
+            subtitles=subtitles,
+        )
+        cname = f"Slide_{slide_id}"
+        (comp_dir / f"{cname}.tsx").write_text(tsx, encoding="utf-8")
 
-        elif etype == "Video":
-            # Video 타입(bumper, intro 등)은 투명 오버레이가 아니므로
-            # Remotion Composition을 별도 생성하지 않는다.
-            # 단, Remotion Studio 미리보기를 위해 파일을 public/ 에 복사한다.
-            src_name = eff.get("src", "")
-            if src_name:
-                asset_dir = remotion_dir.parent / "asset"
-                resolved  = resolve_asset(src_name, asset_dir)
-                if resolved:
-                    public_dir = remotion_dir / "public"
-                    public_dir.mkdir(parents=True, exist_ok=True)
-                    dest_pub = public_dir / src_name
-                    if not dest_pub.exists():
-                        shutil.copy2(str(resolved), str(dest_pub))
-            continue   # Composition/Root.tsx 에는 등재하지 않음
-
-        else:
-            continue
-
-        (comp_dir / f"FX_{eid}.tsx").write_text(tsx, encoding="utf-8")
-        imports.append(f'import {{ {cname} }} from "./compositions/FX_{eid}";')
-        comp_els.append(
+        # Remotion 4.x: ID에 언더스코어 불가 → 하이픈 치환
+        comp_id = f"VividSlide-{slide_id.replace('_', '-')}"
+        root_imports.append(f'import {{ {cname} }} from "./compositions/{cname}";')
+        root_comps.append(
             f'    <Composition id="{comp_id}" component={{{cname}}}'
-            f' durationInFrames={{{dur_f}}} fps={{{fps}}} width={{{w}}} height={{{h}}} />'
+            f' durationInFrames={{{slide_dur}}} fps={{{fps}}}'
+            f' width={{{w}}} height={{{h}}}'
+            f' defaultProps={{{{ previewMode: true }}}} />'
         )
 
+    # Root.tsx / index.ts 생성
     root_src = (
         'import React from "react";\n'
         'import { Composition } from "remotion";\n'
-        + "\n".join(imports) + "\n\n"
-        'export const RemotionRoot: React.FC = () => (\n  <>\n'
-        + "\n".join(comp_els) + "\n"
-        '  </>\n);\n'
+        + "\n".join(root_imports) + "\n\n"
+        "export const RemotionRoot: React.FC = () => (\n  <>\n"
+        + "\n".join(root_comps) + "\n"
+        "  </>\n);\n"
     )
     (remotion_dir / "src" / "Root.tsx").write_text(root_src, encoding="utf-8")
     (remotion_dir / "src" / "index.ts").write_text(
         'import { registerRoot } from "remotion";\n'
         'import { RemotionRoot } from "./Root";\n'
-        'registerRoot(RemotionRoot);\n',
+        "registerRoot(RemotionRoot);\n",
         encoding="utf-8",
     )
 

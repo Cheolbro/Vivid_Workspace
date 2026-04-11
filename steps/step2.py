@@ -8,6 +8,8 @@ steps/step2.py
 
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -73,6 +75,11 @@ class Step2Widget(QWidget):
         self._convert_btn.clicked.connect(self._on_convert_click)
         action_row.addWidget(self._convert_btn)
 
+        self._open_folder_btn = QPushButton("📂  파일 위치 열기")
+        self._open_folder_btn.setEnabled(False)
+        self._open_folder_btn.clicked.connect(self._on_open_folder)
+        action_row.addWidget(self._open_folder_btn)
+
         action_row.addStretch()
         root.addLayout(action_row)
 
@@ -107,7 +114,21 @@ class Step2Widget(QWidget):
         self._log.clear()
         if path:
             self._log.highlight(f"프로젝트: {path.name}")
-            self._log.info("대본 파일(script.txt)을 입력하세요.")
+            # ── 기존 파일 복원 ──────────────────────────────────
+            script    = path / "input" / "script.txt"
+            converted = path / "input" / "script_body_slide.txt"
+            if converted.exists():
+                self._drop_zone.set_ready("script.txt")
+                self._next_btn.setEnabled(True)
+                self._open_folder_btn.setEnabled(True)
+                self._log.success("대본 변환이 이미 완료된 프로젝트입니다.")
+                self._log.info("'파일 위치 열기'로 분할 대본을 확인하거나, NEXT로 넘어가세요.")
+            elif script.exists():
+                self._drop_zone.set_ready("script.txt")
+                self._convert_btn.setEnabled(True)
+                self._log.success("대본 파일이 확인되었습니다. '대본 변환' 버튼을 눌러주세요.")
+            else:
+                self._log.info("대본 파일(script.txt)을 입력하세요.")
 
     # ── 슬롯 ─────────────────────────────────────────────────
 
@@ -173,10 +194,22 @@ class Step2Widget(QWidget):
             f"  · script_intro.txt\n"
             f"  · script_body.txt\n"
             f"  · script_body_slide.txt  ({slide_count}개 슬라이드)\n"
-            "다음 단계로 넘어가세요."
+            "'파일 위치 열기'로 분할된 대본을 확인하고, 다음 단계로 넘어가세요."
         )
         self._next_btn.setEnabled(True)
         self._convert_btn.setEnabled(False)
+        self._open_folder_btn.setEnabled(True)
+
+    def _on_open_folder(self):
+        if self._project_dir is None:
+            return
+        folder = self._project_dir / "input"
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", str(folder)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(folder)])
+        else:
+            subprocess.Popen(["xdg-open", str(folder)])
 
     def _go_next(self):
         step3 = self._stack.widget(2)

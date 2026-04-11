@@ -3,9 +3,9 @@ utils/fx_gallery.py
 FX 카탈로그 갤러리 팝업 다이얼로그
 
 기능:
-  - fx_catalog.md 파싱 → 최초 1회만 로드, 이후 메모리 캐시에서 즉시 반환
+  - fx_catalog.txt 파싱 → 최초 1회만 로드, 이후 메모리 캐시에서 즉시 반환
   - 각 FX 카드에 ★ 즐겨찾기 토글 체크박스
-  - '즐겨찾기 적용' 버튼 → fx_catalog.md 최상단 ## 즐겨찾기 섹션에 자동 등재
+  - '즐겨찾기 적용' 버튼 → fx_catalog.txt 최상단 ## 즐겨찾기 섹션에 자동 등재
   - 툴팁: 호버 시 Props 상세 정보 표시
 """
 
@@ -33,7 +33,7 @@ _catalog_cache: list[dict] | None = None
 
 def _parse_catalog(catalog_path: Path) -> list[dict]:
     """
-    fx_catalog.md 테이블 행들을 파싱하여 FX 항목 리스트 반환.
+    fx_catalog.txt 테이블 행들을 파싱하여 FX 항목 리스트 반환.
     두 번째 호출부터는 캐시된 데이터를 즉시 반환 (파일 I/O 없음).
     """
     global _catalog_cache
@@ -98,7 +98,7 @@ def invalidate_cache() -> None:
 
 def _update_favorites(catalog_path: Path, fav_entries: list[dict]) -> None:
     """
-    fx_catalog.md 최상단에 ## 즐겨찾기 (Favorites) 섹션을 작성/갱신.
+    fx_catalog.txt 최상단에 ## 즐겨찾기 (Favorites) 섹션을 작성/갱신.
     기존 즐겨찾기 섹션이 있으면 교체, 없으면 파일 맨 앞에 삽입.
     """
     text = catalog_path.read_text(encoding="utf-8") if catalog_path.exists() else ""
@@ -168,7 +168,7 @@ class FxGalleryDialog(QDialog):
 
         hint = QLabel(
             "★ 체크박스로 즐겨찾기 선택 후 '즐겨찾기 적용'을 클릭하면\n"
-            "fx_catalog.md 최상단에 자동 등재됩니다. "
+            "fx_catalog.txt 최상단에 자동 등재됩니다. "
             "각 카드에 마우스를 올리면 Props 상세정보가 표시됩니다."
         )
         hint.setStyleSheet("color:#888888; font-size:11px;")
@@ -329,11 +329,11 @@ class FxGalleryDialog(QDialog):
             _update_favorites(self._catalog_path, favorites)
             invalidate_cache()   # 다음 갤러리 열기 시 재파싱
         except Exception as e:
-            QMessageBox.warning(self, "저장 오류", f"fx_catalog.md 저장 실패:\n{e}")
+            QMessageBox.warning(self, "저장 오류", f"fx_catalog.txt 저장 실패:\n{e}")
             return
 
         QMessageBox.information(
             self, "즐겨찾기 저장 완료",
-            f"{len(favorites)}개 항목이 fx_catalog.md 즐겨찾기에 등록되었습니다."
+            f"{len(favorites)}개 항목이 fx_catalog.txt 즐겨찾기에 등록되었습니다."
         )
         self.accept()

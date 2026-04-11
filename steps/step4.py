@@ -17,7 +17,6 @@ Vrew 구조 (실물 분석):
 """
 
 import json
-import re
 import shutil
 import subprocess
 import sys
@@ -25,12 +24,12 @@ import time
 import webbrowser
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer
+from PySide6.QtCore import Qt, QThread, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStackedWidget, QFileDialog,
-    QProgressBar, QLineEdit, QApplication,
-    QDialog, QTextEdit, QFrame,
+    QProgressBar, QApplication,
+    QDialog, QTextEdit, QFrame, QScrollArea,
 )
 
 from utils.theme import C_HIGHLIGHT, C_SUCCESS, C_ERROR, C_BG_INPUT, C_BORDER, C_TEXT, SHARED_FX_DIR
@@ -38,79 +37,13 @@ from utils.widgets import (
     make_title, make_divider, make_status_box,
     StatusLogger, DropZone,
 )
-from utils.backend_ext import (
-    generate_custom_fx_component, update_fx_catalog,
-    generate_compositions, diff_check_effects, save_render_cache,
-    assemble_vrew,
+from utils.backend_ext import generate_compositions, save_render_cache
+from utils.fx_gallery import FxGalleryDialog
+from utils.step4_workers import (
+    ROOT_DIR, CATALOG_PATH, CONFIG_PATH, _NPX,
+    parse_plan_json, detect_custom_fx,
+    RenderWorker, VrewWorker, GeminiWorker, SemanticMatchWorker,
 )
-from utils.fx_gallery import FxGalleryDialog, invalidate_cache as invalidate_fx_cache
-
-ROOT_DIR     = Path(__file__).parent.parent   # Vivid_Workspace/
-CATALOG_PATH = ROOT_DIR / "fx_catalog.md"
-CONFIG_PATH  = ROOT_DIR / "config.json"
-
-
-# ══════════════════════════════════════════════
-# 기획안 파싱 헬퍼
-# ══════════════════════════════════════════════
-
-def parse_plan_json(plan_path: Path) -> dict:
-    """
-    remotion_plan.json 검증 및 파싱.
-    하네스: 0바이트 / JSON 포맷 오류 / effects[] 없음
-    """
-    if not plan_path.exists():
-        raise FileNotFoundError(f"파일을 찾을 수 없습니다: {plan_path}")
-    if plan_path.stat().st_size == 0:
-        raise ValueError("remotion_plan.json 파일이 비어 있습니다 (0바이트).")
-
-    try:
-        plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        raise ValueError(f"JSON 형식 오류:\n{e}")
-
-    if not isinstance(plan.get("effects"), list):
-        raise ValueError(
-            "'effects' 배열이 없거나 형식이 올바르지 않습니다.\n"
-            "remotion_plan.json 에 effects[] 키가 있어야 합니다."
-        )
-    return plan
-
-
-def _process_custom_fx(plan: dict, remotion_dir: Path) -> tuple[dict, list[str]]:
-    """
-    effects[] 중 type=Custom 항목에 대해:
-    1) TSX 컴포넌트를 글로벌 SHARED_FX_DIR 에 생성 → fx_catalog.md 등재
-    2) specificProps 역주입
-    반환: (updated_plan, generated_component_names)
-
-    저장 경로: shared_assets/shared_fx/ (심볼릭 링크로 모든 프로젝트가 공유)
-    """
-    fx_dir    = SHARED_FX_DIR   # 글로벌 경로로 강제
-    fx_dir.mkdir(parents=True, exist_ok=True)
-    generated = []
-
-    for eff in plan["effects"]:
-        if eff.get("type") != "Custom":
-            continue
-
-        info = generate_custom_fx_component(eff, fx_dir)
-        update_fx_catalog(CATALOG_PATH, info)
-        invalidate_fx_cache()   # 카탈로그 업데이트 → 갤러리 캐시 초기화
-
-        # 역주입: specificProps에 default 값 병합
-        if "specificProps" not in eff or not eff["specificProps"]:
-            eff["specificProps"] = {}
-        for k, v in info["defaultProps"].items():
-            eff["specificProps"].setdefault(k, v)
-
-        # 컴포넌트 참조 정보 주입
-        eff["_componentName"] = info["componentName"]
-        eff["_componentFile"] = info["fileName"]
-
-        generated.append(info["componentName"])
-
-    return plan, generated
 
 
 # ══════════════════════════════════════════════
@@ -148,10 +81,11 @@ class PreflightDialog(QDialog):
     @staticmethod
     def _build_prompt(effects: list[dict]) -> str:
         lines = [
-            "기획안에 포함된 아래 Custom 효과들을 "
-            "src/components/fx/ 폴더에 각각 TSX 컴포넌트로 코딩해 줘. "
-            "사용할 commonProps와 specificProps의 기본값을 세팅하고, "
-            "완성 후 fx_catalog.md에 등록해 줘.\n",
+            "기획안에 포함된 아래 Custom 효과들을 글로벌 공유 폴더(shared_assets/shared_fx/)에 "
+            "TSX 컴포넌트로 코딩해 줘. 이 효과들은 모든 프로젝트가 심볼릭 링크로 공유하는 공용 자산이야.\n\n"
+            "* 다른 프로젝트에서도 범용적으로 쓸 수 있게 commonProps와 specificProps의 기본값을 정교하게 세팅해 줘.\n"
+            "* 코딩 완료 후 **루트의 fx_catalog.txt**에 카탈로그 정보를 최신화해 줘.\n"
+            "* (참고) 현재 프로젝트의 src/components/fx/는 글로벌 폴더와 심볼릭 링크로 연결되어 있으니 경로 참조에 유의해.\n",
         ]
         for eff in effects:
             eid  = eff.get("id", "(id없음)")
@@ -273,213 +207,6 @@ class PreflightDialog(QDialog):
 
 
 # ══════════════════════════════════════════════
-# RenderWorker  (QThread — UI 블로킹 방지)
-# ══════════════════════════════════════════════
-
-class RenderWorker(QObject):
-    """
-    Remotion 투명 렌더링 워커.
-    Diff-Check 결과 변경된 FX 항목만 npx remotion render 로 렌더링.
-    """
-    progress  = Signal(int, int)       # (current, total)
-    item_done = Signal(str, str)       # (effect_id, webm_path_str)
-    item_skip = Signal(str)            # (effect_id) — 변경 없어 스킵
-    finished  = Signal(object)         # render_cache: dict[str, str]
-    error     = Signal(str)
-
-    def __init__(
-        self,
-        plan: dict,
-        remotion_dir: Path,
-        renders_dir: Path,
-        cache_path: Path,
-        parent=None,
-    ):
-        super().__init__(parent)
-        self._plan       = plan
-        self._remotion   = remotion_dir
-        self._renders    = renders_dir
-        self._cache_path = cache_path
-        self._abort      = False
-
-    def abort(self):
-        self._abort = True
-
-    def run(self):
-        try:
-            self._do_render()
-        except Exception as e:
-            self.error.emit(str(e))
-
-    def _do_render(self):
-        renders_dir = self._renders
-        renders_dir.mkdir(parents=True, exist_ok=True)
-
-        changed_ids, new_cache = diff_check_effects(self._cache_path, self._plan)
-        effects = {e["id"]: e for e in self._plan.get("effects", [])}
-
-        # 스킵 항목 알림
-        for eid in effects:
-            if eid not in changed_ids:
-                self.item_skip.emit(eid)
-
-        if not changed_ids:
-            self.finished.emit(new_cache)
-            return
-
-        total = len(changed_ids)
-        fps   = self._plan.get("fps", 30)
-
-        # node_modules 미설치 시 npm install 선행
-        node_modules = self._remotion / "node_modules"
-        if not node_modules.exists():
-            self.progress.emit(0, total)
-            ret = subprocess.run(
-                ["npm", "install"],
-                cwd=str(self._remotion),
-                capture_output=True, text=True,
-            )
-            if ret.returncode != 0:
-                self.error.emit(f"npm install 실패:\n{ret.stderr[:800]}")
-                return
-
-        for idx, eid in enumerate(changed_ids, start=1):
-            if self._abort:
-                self.error.emit("렌더링이 사용자에 의해 중단되었습니다.")
-                return
-
-            eff     = effects[eid]
-            dur_f   = eff.get("durationFrames", 60)
-            out_w   = renders_dir / f"{eid}.webm"
-            comp_id = f"VividFX_{eid}"
-
-            self.progress.emit(idx - 1, total)
-
-            cmd = [
-                "npx", "remotion", "render",
-                "src/index.ts",
-                comp_id,
-                str(out_w),
-                "--codec=vp8",
-                "--pixel-format=yuva420p",
-                f"--frames=0-{dur_f - 1}",
-                "--overwrite",
-            ]
-
-            ret = subprocess.run(
-                cmd,
-                cwd=str(self._remotion),
-                capture_output=True, text=True,
-            )
-
-            if ret.returncode != 0:
-                self.error.emit(
-                    f"[{eid}] 렌더링 실패 (exit {ret.returncode}):\n"
-                    f"{ret.stderr[-600:]}"
-                )
-                return
-
-            self.item_done.emit(eid, str(out_w))
-            self.progress.emit(idx, total)
-
-        self.finished.emit(new_cache)
-
-
-# ══════════════════════════════════════════════
-# VrewWorker  (QThread)
-# ══════════════════════════════════════════════
-
-class VrewWorker(QObject):
-    """최종 Vrew 파일 조립 워커"""
-    finished = Signal(str)   # 출력 .vrew 경로
-    error    = Signal(str)
-
-    def __init__(
-        self,
-        asset_dir: Path,
-        plan: dict,
-        renders_dir: Path,
-        fps: int = 30,
-        parent=None,
-    ):
-        super().__init__(parent)
-        self._asset   = asset_dir
-        self._plan    = plan
-        self._renders = renders_dir
-        self._fps     = fps
-
-    def run(self):
-        try:
-            out = assemble_vrew(self._asset, self._plan, self._renders, self._fps)
-            self.finished.emit(str(out))
-        except Exception as e:
-            self.error.emit(str(e))
-
-
-# ══════════════════════════════════════════════
-# GeminiWorker  (QThread — Gemini API 호출)
-# ══════════════════════════════════════════════
-
-class GeminiWorker(QObject):
-    """
-    Gemini API를 이용해 슬라이드 대본을 분석하고
-    핵심 키워드 + 연출 분위기 요약문을 반환하는 워커.
-    """
-    finished = Signal(str)   # 분석 결과 텍스트
-    error    = Signal(str)
-
-    def __init__(self, api_key: str, script_text: str, parent=None):
-        super().__init__(parent)
-        self._api_key = api_key
-        self._script  = script_text
-
-    def run(self):
-        try:
-            import google.generativeai as genai  # type: ignore
-        except ImportError:
-            self.error.emit(
-                "google-generativeai 라이브러리가 설치되어 있지 않습니다.\n"
-                "터미널에서 아래 명령어를 실행해 설치하세요:\n"
-                "  pip install google-generativeai"
-            )
-            return
-
-        try:
-            genai.configure(api_key=self._api_key)
-            model = genai.GenerativeModel("gemini-2.5-flash")
-
-            prompt = (
-                "아래는 유튜브 영상 대본입니다. 슬라이드별로 다음 항목을 분석하여 정리해주세요:\n\n"
-                "1. 핵심 키워드 (3개 이내)\n"
-                "2. 연출 분위기 (예: 긴박, 충격, 감동, 해설, 유머 등)\n"
-                "3. 권장 시각 효과 방향 (간략하게 1~2줄)\n\n"
-                "대본:\n"
-                "────────────────────────────────────────\n"
-                f"{self._script}\n"
-                "────────────────────────────────────────\n\n"
-                "슬라이드가 여러 개인 경우 [슬라이드 N] 구분을 유지하며 각각 분석해주세요."
-            )
-
-            response = model.generate_content(prompt)
-            self.finished.emit(response.text)
-
-        except Exception as e:
-            err_msg = str(e)
-            # 흔한 오류 친절 설명
-            if "API_KEY" in err_msg.upper() or "invalid" in err_msg.lower():
-                self.error.emit(
-                    f"API Key가 유효하지 않습니다.\n올바른 Gemini API Key를 입력하세요.\n\n원본 오류: {err_msg[:200]}"
-                )
-            elif "gemini-2.5-flash" in err_msg:
-                self.error.emit(
-                    f"gemini-2.5-flash 모델에 접근할 수 없습니다.\n"
-                    f"API Key 권한 또는 모델명을 확인하세요.\n\n원본 오류: {err_msg[:200]}"
-                )
-            else:
-                self.error.emit(f"Gemini API 오류:\n{err_msg[:300]}")
-
-
-# ══════════════════════════════════════════════
 # Step4Widget
 # ══════════════════════════════════════════════
 
@@ -498,6 +225,8 @@ class Step4Widget(QWidget):
         self._vrew_worker:   VrewWorker | None = None
         self._gemini_thread: QThread | None = None
         self._gemini_worker: GeminiWorker | None = None
+        self._match_thread:  QThread | None = None
+        self._match_worker:  "SemanticMatchWorker | None" = None
 
         # 타이밍 추적 (최종 리포트용)
         self._render_start_time: float | None = None
@@ -506,21 +235,49 @@ class Step4Widget(QWidget):
 
         self._latest_vrew: Path | None = None
 
+        # Remotion Studio 프로세스 (중복 실행 방지)
+        self._studio_proc: subprocess.Popen | None = None
+        self._studio_port: int = 3000
+
         self._build_ui()
 
     # ── UI 구성 ──────────────────────────────────────────────────────────
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(32, 24, 32, 24)
-        root.setSpacing(12)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        root.addWidget(make_title("4. 영상 기획안 및 조립"))
-
-        # 상태창
+        # ── 고정 헤더: 제목 + 상태창 ──────────────────────────────────
+        header = QWidget()
+        hdr = QVBoxLayout(header)
+        hdr.setContentsMargins(32, 24, 32, 8)
+        hdr.setSpacing(8)
+        hdr.addWidget(make_title("4. 영상 기획안 및 조립"))
         self._status_box = make_status_box()
-        root.addWidget(self._status_box)
+        hdr.addWidget(self._status_box)
         self._log = StatusLogger(self._status_box)
+        root.addWidget(header)
+
+        # ── 스크롤 영역: STEP A ~ 내비게이션 ─────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            "QScrollArea { border: none; background: transparent; }"
+            "QScrollBar:vertical { background: #1E1E1E; width: 8px; border-radius: 4px; }"
+            "QScrollBar::handle:vertical { background: #444; border-radius: 4px; }"
+        )
+        body = QWidget()
+        body_lyt = QVBoxLayout(body)
+        body_lyt.setContentsMargins(32, 8, 32, 24)
+        body_lyt.setSpacing(12)
+        scroll.setWidget(body)
+        root.addWidget(scroll)
+
+        # 이하 모든 STEP A~D 위젯은 body_lyt 에 추가
+        # (가독성을 위해 root → body_lyt 변수명은 동일하게 유지)
+        root = body_lyt  # noqa: F841  (섀도잉 의도적)
 
         root.addWidget(make_divider())
 
@@ -553,6 +310,11 @@ class Step4Widget(QWidget):
         )
         self._fx_gallery_btn.clicked.connect(self._on_fx_gallery_click)
         row_a.addWidget(self._fx_gallery_btn)
+
+        self._open_input_btn = QPushButton("📂  프로젝트 폴더 열기")
+        self._open_input_btn.setToolTip("프로젝트 input/ 폴더를 파일 탐색기로 엽니다.")
+        self._open_input_btn.clicked.connect(self._on_open_input_folder)
+        row_a.addWidget(self._open_input_btn)
 
         row_a.addStretch()
         root.addLayout(row_a)
@@ -646,40 +408,26 @@ class Step4Widget(QWidget):
         root.addWidget(make_divider())
 
         # ─────────────────────────────────────────────────
-        # STEP D: Gemini API — 기획 지시문 복사
+        # STEP D: AI 기획 지시문 생성 (Google OAuth)
         # ─────────────────────────────────────────────────
-        lbl_d = QLabel("[ STEP D ]  AI 기획 지시문 생성 (Gemini API)")
+        lbl_d = QLabel("[ STEP D ]  AI 기획 지시문 생성")
         lbl_d.setStyleSheet(
             f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;"
         )
         root.addWidget(lbl_d)
 
-        api_row = QHBoxLayout()
-        api_row.setSpacing(8)
-
-        api_label = QLabel("API Key:")
-        api_label.setStyleSheet(f"color:{C_TEXT}; font-size:11px;")
-        api_label.setFixedWidth(60)
-        api_row.addWidget(api_label)
-
-        self._api_key_input = QLineEdit()
-        self._api_key_input.setPlaceholderText(
-            "Gemini API Key 입력  (예: AIzaSy...)"
+        # OAuth 인증 상태 표시 (앱 시작 시점 기준 — 변경 시 재시작 필요)
+        _oauth_active = (ROOT_DIR / "client_secret.json").exists()
+        oauth_info = QLabel(
+            "🔐  Google OAuth 인증 모드  (client_secret.json 감지됨)"
+            if _oauth_active else
+            "⚠️  client_secret.json 없음 — Google OAuth 파일을 루트에 배치하세요"
         )
-        self._api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self._api_key_input.setStyleSheet(
-            f"background:{C_BG_INPUT}; color:{C_TEXT}; border:1px solid {C_BORDER};"
-            "border-radius:4px; padding:4px 8px; font-size:11px;"
+        oauth_info.setStyleSheet(
+            f"color:{'#4CAF50' if _oauth_active else '#FF5252'}; font-size:10px;"
         )
-        api_row.addWidget(self._api_key_input)
-
-        save_key_btn = QPushButton("💾  저장")
-        save_key_btn.setFixedWidth(60)
-        save_key_btn.setToolTip("API Key를 config.json에 암호화 없이 저장합니다.")
-        save_key_btn.clicked.connect(self._on_save_api_key)
-        api_row.addWidget(save_key_btn)
-
-        root.addLayout(api_row)
+        oauth_info.setWordWrap(True)
+        root.addWidget(oauth_info)
 
         directive_row = QHBoxLayout()
         directive_row.setSpacing(10)
@@ -716,6 +464,12 @@ class Step4Widget(QWidget):
         self._render_done_count = 0
         self._skip_count        = 0
 
+        # 프로젝트 변경 시 기존 Studio 프로세스 종료
+        if self._studio_proc is not None and self._studio_proc.poll() is None:
+            self._studio_proc.terminate()
+        self._studio_proc = None
+        self._studio_port = 3000
+
         self._drop_zone.reset()
         self._log.clear()
         self._preview_btn.setEnabled(False)
@@ -726,11 +480,26 @@ class Step4Widget(QWidget):
 
         if path:
             self._log.highlight(f"프로젝트: {path.name}")
-            self._log.info(
-                "제미나이(웹)에 storyboard.pdf와 fx_catalog.md를 참고하여 만든\n"
-                "영상 기획안(remotion_plan.json)을 업로드 하세요."
-            )
-            self._load_api_key()   # 저장된 API Key 자동 로드
+            # ── 기존 파일 복원 ──────────────────────────────────
+            plan = path / "asset" / "remotion_plan.json"
+            if plan.exists():
+                try:
+                    self._plan = parse_plan_json(plan)
+                    self._drop_zone.set_ready("remotion_plan.json")
+                    self._preview_btn.setEnabled(True)
+                    self._render_btn.setEnabled(True)
+                    self._log.success("기획안 파일이 확인되었습니다.")
+                    self._log.info("Remotion 실행 또는 렌더링 버튼을 눌러주세요.")
+                except Exception:
+                    self._log.info(
+                        "제미나이(웹)에 storyboard.pdf와 fx_catalog.txt를 참고하여 만든\n"
+                        "영상 기획안(remotion_plan.json)을 업로드 하세요."
+                    )
+            else:
+                self._log.info(
+                    "제미나이(웹)에 storyboard.pdf와 fx_catalog.txt를 참고하여 만든\n"
+                    "영상 기획안(remotion_plan.json)을 업로드 하세요."
+                )
 
     # ── §A: 기획안 업로드 ────────────────────────────────────────────────
 
@@ -776,42 +545,88 @@ class Step4Widget(QWidget):
             self._drop_zone.set_error("JSON 파싱 실패 — 내용을 확인하세요")
             return
 
-        # ── Custom FX 동적 생성 ──
-        remotion_dir = self._project_dir / "remotion"
+        # ── Composition 파일 생성 (슬라이드 기반) ──
+        remotion_dir  = self._project_dir / "remotion"
+        timeline_path = self._project_dir / "asset" / "base_timeline.json"
         try:
-            plan, generated = _process_custom_fx(plan, remotion_dir)
-        except Exception as e:
-            self._log.error(f"Custom FX 생성 오류:\n{e}")
-            return
-
-        # 역주입된 plan 저장
-        dest.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        # ── Composition 파일 생성 ──
-        try:
-            generate_compositions(plan, remotion_dir)
+            generate_compositions(plan, remotion_dir, timeline_path=timeline_path)
         except Exception as e:
             self._log.error(f"Composition 생성 오류:\n{e}")
             return
 
         self._plan = plan
-        effects = plan.get("effects", [])
+        effects    = plan.get("effects", [])
 
-        self._drop_zone.set_ready(src.name)
+        # ── Custom 항목 분류 ────────────────────────────────────────────────
+        # ① type="Custom"                    → 신규 효과 필요 → PreflightDialog
+        # ② type=컴포넌트명 & TSX 존재        → 기등록 효과 → 바로 사용
+        # ③ type=컴포넌트명 & TSX 미존재      → 신규 효과 필요 → PreflightDialog
+        _known_builtin = {"Popup", "Video", "TextPopup"}
+
+        def _is_new_custom(eff: dict) -> bool:
+            t = eff.get("type", "")
+            if t in _known_builtin:
+                return False
+            if t == "Custom":
+                return True           # 명시적 신규 요청
+            # 컴포넌트명으로 지정됐지만 파일이 없는 경우
+            return not (SHARED_FX_DIR / f"{t}.tsx").exists()
+
+        truly_new   = [e for e in effects if _is_new_custom(e)]
+        named_known = [
+            e for e in effects
+            if e.get("type") not in _known_builtin
+            and e.get("type") != "Custom"
+            and (SHARED_FX_DIR / f"{e.get('type','')}.tsx").exists()
+        ]
+
+        self._drop_zone.set_ready("remotion_plan.json")
         self._log.success(
-            f"기획안 파일이 입력되었습니다.\n"
-            f"  · effects: {len(effects)}개"
-            + (f"\n  · Custom FX 생성: {', '.join(generated)}" if generated else "")
-            + "\nRemotion 버튼을 눌러 미리보기 또는 렌더링을 진행하세요."
+            f"기획안 파일이 입력되었습니다.  ·  effects: {len(effects)}개"
         )
 
-        if generated:
-            self._log.highlight(
-                f"fx_catalog.md에 {len(generated)}개 컴포넌트가 자동 등재되었습니다."
+        # 기등록 컴포넌트 바로 사용 안내
+        if named_known:
+            self._log.info(
+                f"기등록 FX {len(named_known)}개 감지 — "
+                f"({', '.join(e.get('type','') for e in named_known)}) "
+                "TSX 파일 확인됨. 즉시 사용 가능합니다."
             )
 
-        self._preview_btn.setEnabled(True)
-        self._render_btn.setEnabled(True)
+        # ── 진짜 신규 Custom 항목만 PreflightDialog ────────────────────────
+        if truly_new:
+            self._log.highlight(
+                f"신규 Custom 시각 효과 {len(truly_new)}개가 감지되었습니다.\n"
+                "코딩 지시 팝업을 확인하고, Claude Code에서 TSX를 작성한 후 진행하세요."
+            )
+            dlg = PreflightDialog(truly_new, parent=self)
+            if dlg.exec() == PreflightDialog.DialogCode.Accepted:
+                self._log.success("Custom FX 코딩 완료. 미리보기 또는 렌더링을 진행하세요.")
+                self._preview_btn.setEnabled(True)
+                self._render_btn.setEnabled(True)
+            else:
+                self._log.info("Custom FX 코딩이 취소되었습니다. 준비 후 다시 업로드하세요.")
+                self._drop_zone.reset()
+                self._plan = None
+        else:
+            self._log.info("미리보기 또는 렌더링 버튼을 눌러주세요.")
+            self._preview_btn.setEnabled(True)
+            self._render_btn.setEnabled(True)
+
+    # ── §A: 프로젝트 input 폴더 열기 ────────────────────────────────────────
+
+    def _on_open_input_folder(self):
+        """프로젝트 input/ 폴더를 파일 탐색기로 열기"""
+        if self._project_dir is None:
+            return
+        folder = self._project_dir / "input"
+        folder.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", str(folder)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(folder)])
+        else:
+            subprocess.Popen(["xdg-open", str(folder)])
 
     # ── §A: FX 카탈로그 갤러리 ────────────────────────────────────────────
 
@@ -822,15 +637,190 @@ class Step4Widget(QWidget):
 
     # ── §B: 미리보기 ─────────────────────────────────────────────────────
 
+    def _sync_fx_files(self, remotion_dir: Path) -> None:
+        """
+        심볼릭 링크가 실패(Windows 권한 부족 등)한 경우를 대비해
+        SHARED_FX_DIR의 최신 TSX 파일을 프로젝트 fx/ 폴더에 직접 동기화.
+        심볼릭 링크가 정상이면 아무것도 하지 않는다.
+        """
+        fx_dir = remotion_dir / "src" / "components" / "fx"
+        if fx_dir.is_symlink() and fx_dir.exists():
+            return  # 심볼릭 링크 유효 → 동기화 불필요
+
+        fx_dir.mkdir(parents=True, exist_ok=True)
+        updated = 0
+        for tsx in SHARED_FX_DIR.glob("*.tsx"):
+            dest = fx_dir / tsx.name
+            if not dest.exists() or dest.stat().st_mtime < tsx.stat().st_mtime:
+                shutil.copy2(str(tsx), str(dest))
+                updated += 1
+        if updated:
+            self._log.info(
+                f"FX 파일 {updated}개 동기화 완료 "
+                "(심볼릭 링크 미작동 → 직접 복사 모드)"
+            )
+
+    def _poll_studio_ready(self, port: int, url: str, attempts: int) -> None:
+        """
+        Remotion Studio가 포트에서 응답할 때까지 500ms마다 재확인.
+        최대 60초(120회) 대기 후 타임아웃.
+        """
+        import socket as _socket
+        try:
+            with _socket.create_connection(("localhost", port), timeout=0.3):
+                webbrowser.open(url)
+                self._log.success(
+                    f"Remotion Studio 준비 완료 ({url})  "
+                    "— 브라우저에서 미리보기를 확인하세요."
+                )
+                return
+        except OSError:
+            pass
+
+        if attempts >= 120:  # 60초 타임아웃
+            self._log.error(
+                "Remotion Studio가 60초 내에 응답하지 않았습니다. "
+                "터미널에서 오류를 확인하거나 브라우저를 수동으로 열어주세요."
+            )
+            webbrowser.open(url)
+            return
+
+        # 5초마다 진행 알림
+        if attempts > 0 and attempts % 10 == 0:
+            elapsed = attempts // 2
+            self._log.info(
+                f"Remotion Studio 컴파일/번들링 중… ({elapsed}초 경과)"
+            )
+
+        QTimer.singleShot(
+            500,
+            lambda: self._poll_studio_ready(port, url, attempts + 1),
+        )
+
     def _on_preview_click(self):
+        """Remotion Studio 미리보기 실행"""
+        if self._project_dir is None or self._plan is None:
+            self._log.error("프로젝트와 기획안을 먼저 로드하세요.")
+            return
+
+        # Custom FX 감지
+        custom_effs = detect_custom_fx(self._plan)
+
+        if custom_effs:
+            # ① PreflightDialog — Claude에게 코딩 요청
+            dlg = PreflightDialog(custom_effs, parent=self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return   # 사용자가 취소
+
+            # ② FX 파일 동기화 (심볼릭 링크 / 복사)
+            self._sync_fx_files(self._project_dir / "remotion")
+
+            # ③ fx_catalog.txt 읽기
+            if not CATALOG_PATH.exists():
+                self._log.error("fx_catalog.txt 파일이 없습니다. FX 카탈로그를 확인하세요.")
+                return
+            catalog_text = CATALOG_PATH.read_text(encoding="utf-8")
+
+            # ④ SemanticMatchWorker 실행 (Gemini 일괄 매칭)
+            self._log.info(
+                f"Gemini로 Custom FX {len(custom_effs)}개 시맨틱 매칭 중...\n"
+                "(첫 실행 시 브라우저 OAuth 로그인 창이 열립니다)"
+            )
+            self._match_thread = QThread(self)
+            self._match_worker = SemanticMatchWorker(custom_effs, catalog_text)
+            self._match_worker.moveToThread(self._match_thread)
+            self._match_thread.started.connect(self._match_worker.run)
+            self._match_worker.finished.connect(self._on_match_done)
+            self._match_worker.error.connect(self._on_match_error)
+            self._match_worker.finished.connect(self._match_thread.quit)
+            self._match_worker.error.connect(self._match_thread.quit)
+            self._match_thread.start()
+        else:
+            # Custom FX 없으면 즉시 미리보기 실행
+            self._launch_preview()
+
+    def _on_match_done(self, matches: dict):
+        """SemanticMatchWorker 완료 — 매칭 결과를 plan에 역주입 후 미리보기 실행"""
+        applied = []
+        unmatched = []
+
+        for eff in self._plan["effects"]:
+            eid = eff.get("id", "")
+            if eff.get("type") != "Custom":
+                continue
+            if eid in matches:
+                comp_name = matches[eid]
+                # type을 실제 컴포넌트명으로 교체 →
+                # _build_slide_tsx()의 named-component 브랜치(SHARED_FX_DIR 존재 확인)가
+                # 자동으로 처리하므로 별도 _componentName 의존 불필요
+                eff["type"] = comp_name
+                eff["_componentName"] = comp_name        # 메타데이터용 보존
+                eff["_componentFile"] = f"{comp_name}.tsx"
+                applied.append(f"  ✅ [{eid}] → {comp_name}")
+            else:
+                unmatched.append(f"  ⚠️ [{eid}] 매칭 결과 없음 — 렌더링 시 건너뜀")
+
+        report = "\n".join(applied + unmatched)
+        self._log.success(f"시맨틱 매칭 완료:\n{report}")
+
+        self._launch_preview()
+
+    def _on_match_error(self, msg: str):
+        """SemanticMatchWorker 실패"""
+        self._log.error(f"FX 시맨틱 매칭 실패:\n{msg}\n\n매칭 없이 미리보기를 계속합니다.")
+        # 매칭 실패해도 미리보기는 계속 (Custom FX는 건너뜀)
+        self._launch_preview()
+
+    def _launch_preview(self):
+        """Composition 재생성 + Remotion Studio 실행"""
         if self._project_dir is None:
             return
+
+        remotion_dir  = self._project_dir / "remotion"
+        timeline_path = self._project_dir / "asset" / "base_timeline.json"
+
+        # ── Composition 재생성 ─────────────────────────────────────────
+        # 매칭 후 type이 업데이트된 self._plan으로 TSX를 항상 최신 상태로 재생성.
+        # (업로드 시점의 generate_compositions 호출은 매칭 전이라 Custom FX 스킵됨)
+        try:
+            generate_compositions(self._plan, remotion_dir, timeline_path=timeline_path)
+        except Exception as e:
+            self._log.error(f"Composition 생성 오류:\n{e}")
+            return
+
+        # ── 기존 프로세스 살아있으면 재사용 (새 탭 방지) ──────────────
+        # Remotion Studio는 파일 변경을 감지해 자동 핫리로드하므로
+        # 위에서 TSX를 재생성하면 브라우저도 자동 갱신됨.
+        if self._studio_proc is not None and self._studio_proc.poll() is None:
+            url = f"http://localhost:{self._studio_port}"
+            self._log.info(f"Remotion Studio 이미 실행 중 → 재생성된 Composition 핫리로드 대기 ({url})")
+            webbrowser.open(url)
+            return
+
         remotion_dir = self._project_dir / "remotion"
-        self._log.info("Remotion Studio 시작 중... (잠시 후 브라우저가 열립니다)")
+
+        # ── FX 파일 동기화 (심볼릭 링크 오류 방지) ───────────────────
+        self._sync_fx_files(remotion_dir)
+
+        # ── 사용 가능한 포트 탐색 ─────────────────────────────────────
+        import socket
+        port = 3000
+        for p in range(3000, 3020):
+            try:
+                with socket.create_connection(("localhost", p), timeout=0.3):
+                    pass  # 포트 점유 중 → 다음 포트 시도
+            except OSError:
+                port = p  # 비어있는 첫 포트
+                break
+
+        self._log.info(
+            f"Remotion Studio 시작 중 (포트 {port})… "
+            "컴파일이 완료되면 브라우저가 자동으로 열립니다."
+        )
 
         try:
-            subprocess.Popen(
-                ["npx", "remotion", "studio", "src/index.ts"],
+            proc = subprocess.Popen(
+                [_NPX, "remotion", "studio", "src/index.ts", "--port", str(port)],
                 cwd=str(remotion_dir),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -843,39 +833,21 @@ class Step4Widget(QWidget):
             self._log.error(f"Remotion Studio 실행 실패:\n{e}")
             return
 
-        QTimer.singleShot(2500, lambda: webbrowser.open("http://localhost:3000"))
-        self._log.success("Remotion Studio 실행됨. 브라우저에서 미리보기를 확인하세요.")
+        self._studio_proc = proc
+        self._studio_port = port
+        url = f"http://localhost:{port}"
+
+        # ── 고정 딜레이 대신 포트 응답 폴링 후 브라우저 오픈 ──────────
+        self._poll_studio_ready(port, url, attempts=0)
 
     # ── §B: 투명 렌더링 ──────────────────────────────────────────────────
 
     def _on_render_click(self):
         """
-        렌더링 버튼 인터셉트 — Pre-flight Check 후 렌더 시작.
-
-        1) effects[] 에서 type=Custom 항목 추출
-        2) Custom 없음 → 즉시 렌더 시작
-        3) Custom 있음 → PreflightDialog 표시 (Human-in-the-loop)
-           - '취소' → 렌더 중단
-           - '코딩 완료' → 렌더 시작
+        렌더링 버튼 클릭 — Custom FX 검사는 업로드 시점에 이미 완료되었으므로 바로 렌더 시작.
         """
         if self._plan is None or self._project_dir is None:
             return
-
-        custom_effects = [
-            e for e in self._plan.get("effects", [])
-            if e.get("type") == "Custom"
-        ]
-
-        if custom_effects:
-            self._log.highlight(
-                f"Custom FX {len(custom_effects)}개 감지 → Pre-flight Check 팝업을 표시합니다."
-            )
-            dlg = PreflightDialog(custom_effects, parent=self)
-            if dlg.exec() != QDialog.DialogCode.Accepted:
-                self._log.info("렌더링이 취소되었습니다.")
-                return
-            self._log.success("코딩 완료 확인. 렌더링을 시작합니다.")
-
         self._start_render()
 
     def _start_render(self):
@@ -1028,44 +1000,17 @@ class Step4Widget(QWidget):
         except Exception as e:
             self._log.error(f"Vrew 열기 실패:\n{e}")
 
-    # ── §E: Gemini API — 기획 지시문 ─────────────────────────────────────
-
-    def _on_save_api_key(self):
-        """API Key를 config.json에 저장"""
-        key = self._api_key_input.text().strip()
-        if not key:
-            self._log.error("API Key를 입력하세요.")
-            return
-        try:
-            cfg = {}
-            if CONFIG_PATH.exists():
-                try:
-                    cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-                except Exception:
-                    cfg = {}
-            cfg["gemini_api_key"] = key
-            CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-            self._log.success("API Key가 저장되었습니다.")
-        except Exception as e:
-            self._log.error(f"API Key 저장 실패:\n{e}")
-
-    def _load_api_key(self):
-        """시작 시 config.json에서 저장된 API Key 자동 로드"""
-        try:
-            if CONFIG_PATH.exists():
-                cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-                key = cfg.get("gemini_api_key", "")
-                if key:
-                    self._api_key_input.setText(key)
-        except Exception:
-            pass   # 파일 없거나 파싱 실패 시 무시
+    # ── §E: AI 기획 지시문 (Google OAuth) ───────────────────────────────
 
     def _on_directive_click(self):
         """기획 지시문 생성 + 클립보드 복사"""
-        # 사전 조건 검사
-        api_key = self._api_key_input.text().strip()
-        if not api_key:
-            self._log.error("Gemini API Key를 입력해주세요. (STEP D)")
+        # OAuth 인증 파일 확인
+        if not (ROOT_DIR / "client_secret.json").exists():
+            self._log.error(
+                "client_secret.json 파일이 없습니다.\n"
+                "Google Cloud Console에서 OAuth 클라이언트 ID를 발급받아\n"
+                f"아래 경로에 저장하세요:\n  {ROOT_DIR / 'client_secret.json'}"
+            )
             return
 
         if self._project_dir is None:
@@ -1089,11 +1034,11 @@ class Step4Widget(QWidget):
             self._log.error(f"파일 읽기 오류:\n{e}")
             return
 
-        self._log.info("Gemini API에 대본 분석 요청 중...\n(네트워크 상태에 따라 수 초 소요)")
+        self._log.info("Google OAuth로 Gemini에 대본 분석 요청 중...\n(첫 실행 시 브라우저 로그인 창이 열립니다)")
         self._directive_btn.setEnabled(False)
 
         self._gemini_thread = QThread(self)
-        self._gemini_worker = GeminiWorker(api_key, script_text)
+        self._gemini_worker = GeminiWorker(script_text=script_text)
         self._gemini_worker.moveToThread(self._gemini_thread)
 
         self._gemini_thread.started.connect(self._gemini_worker.run)
@@ -1131,7 +1076,7 @@ class Step4Widget(QWidget):
     def closeEvent(self, event):
         if self._render_worker:
             self._render_worker.abort()
-        for t in (self._render_thread, self._vrew_thread, self._gemini_thread):
+        for t in (self._render_thread, self._vrew_thread, self._gemini_thread, self._match_thread):
             if t and t.isRunning():
                 t.quit()
                 t.wait(2000)

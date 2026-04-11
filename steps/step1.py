@@ -2,21 +2,51 @@
 steps/step1.py
 1단계 — 프로그램 생성
   - 프로젝트 폴더명 입력 → Project_templete 복제
+  - 기존 프로젝트 열기 → 진행 단계 자동 감지 후 해당 단계로 이동
   - NEXT 버튼 → 2단계 이동
 """
 
 import os
 import re
 import shutil
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QStackedWidget,
+    QFileDialog, QFrame,
 )
 
-from utils.theme import ROOT_DIR, TEMPLATE_DIR, SHARED_FX_DIR, C_HIGHLIGHT
+from utils.theme import ROOT_DIR, TEMPLATE_DIR, SHARED_FX_DIR, C_HIGHLIGHT, C_TEXT, C_BG_INPUT, C_BORDER
 from utils.widgets import make_title, make_divider, make_status_box, StatusLogger
+
+
+# ── 진행 단계 감지 ──────────────────────────────────────────────────────
+
+def detect_stage(project_dir: Path) -> int:
+    """
+    프로젝트 폴더 내 파일 존재 여부로 마지막 완료 단계를 감지.
+    반환값: 이동해야 할 스택 인덱스 (0=1단계, 1=2단계, 2=3단계, 3=4단계)
+
+    감지 기준:
+      4단계: asset/remotion_plan.json 존재
+      3단계: asset/base_timeline.json 존재
+      2단계: input/script_body_slide.txt 존재
+      1단계: 그 외 (방금 생성된 프로젝트)
+    """
+    if (project_dir / "asset" / "remotion_plan.json").exists():
+        return 3   # 4단계로 이동
+    if (project_dir / "asset" / "base_timeline.json").exists():
+        return 2   # 3단계로 이동 (타임라인까지 완료 → 3단계 화면)
+    if (project_dir / "input" / "script_body_slide.txt").exists():
+        return 1   # 2단계로 이동 (대본 변환 완료 → 2단계 화면)
+    return 0       # 1단계 유지 (NEXT 활성화만)
+
+
+def is_valid_project(folder: Path) -> bool:
+    """Vivid 프로젝트 폴더인지 확인 (remotion/package.json 존재 여부)"""
+    return (folder / "remotion" / "package.json").exists()
 
 
 class Step1Widget(QWidget):
@@ -42,38 +72,63 @@ class Step1Widget(QWidget):
 
         root.addWidget(make_divider())
 
-        lbl = QLabel("프로젝트 폴더명 (영문만 입력)")
-        lbl.setStyleSheet(
+        # ── 신규 프로젝트 섹션 ─────────────────────────────
+        new_lbl = QLabel("새 프로젝트 생성")
+        new_lbl.setStyleSheet(
             f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;"
         )
-        root.addWidget(lbl)
+        root.addWidget(new_lbl)
 
         self._folder_input = QLineEdit()
-        self._folder_input.setPlaceholderText("예: EcoNomics_EP01")
+        self._folder_input.setPlaceholderText("예: EcoNomics_EP01  (영문·숫자·하이픈·언더스코어)")
         self._folder_input.returnPressed.connect(self._on_create)
         root.addWidget(self._folder_input)
 
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(12)
-
-        self._create_btn = QPushButton("폴더 생성")
+        create_row = QHBoxLayout()
+        create_row.setSpacing(12)
+        self._create_btn = QPushButton("📁  폴더 생성")
         self._create_btn.clicked.connect(self._on_create)
-        btn_row.addWidget(self._create_btn)
+        create_row.addWidget(self._create_btn)
+        create_row.addStretch()
+        root.addLayout(create_row)
 
-        btn_row.addStretch()
+        # ── 구분선 ────────────────────────────────────────
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color:{C_BORDER};")
+        root.addWidget(sep)
 
+        # ── 기존 프로젝트 섹션 ─────────────────────────────
+        open_lbl = QLabel("기존 프로젝트 열기")
+        open_lbl.setStyleSheet(
+            f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;"
+        )
+        root.addWidget(open_lbl)
+
+        open_row = QHBoxLayout()
+        open_row.setSpacing(12)
+
+        self._open_btn = QPushButton("🔓  프로젝트 폴더 선택")
+        self._open_btn.clicked.connect(self._on_open)
+        open_row.addWidget(self._open_btn)
+        open_row.addStretch()
+        root.addLayout(open_row)
+
+        # ── 하단 NEXT 버튼 ────────────────────────────────
+        root.addStretch()
+
+        next_row = QHBoxLayout()
+        next_row.addStretch()
         self._next_btn = QPushButton("NEXT  ▶")
         self._next_btn.setObjectName("NextBtn")
         self._next_btn.setEnabled(False)
         self._next_btn.clicked.connect(self._go_next)
-        btn_row.addWidget(self._next_btn)
+        next_row.addWidget(self._next_btn)
+        root.addLayout(next_row)
 
-        root.addLayout(btn_row)
-        root.addStretch()
+        self._log.highlight("새 프로젝트를 생성하거나, 기존 프로젝트 폴더를 선택하세요.")
 
-        self._log.highlight("프로젝트 폴더명(영문)을 입력하세요.")
-
-    # ── 슬롯 ─────────────────────────────────────────────────
+    # ── 슬롯: 신규 생성 ──────────────────────────────────────
 
     def _on_create(self):
         raw = self._folder_input.text().strip()
@@ -89,9 +144,12 @@ class Step1Widget(QWidget):
             )
             return
 
-        target = ROOT_DIR / raw
+        # 날짜_프로젝트명 형식으로 자동 조합
+        today  = date.today().strftime("%Y%m%d")
+        folder = f"{today}_{raw}"
+        target = ROOT_DIR / folder
         if target.exists():
-            self._log.error(f"'{raw}' 폴더가 이미 존재합니다. 다른 이름을 사용하세요.")
+            self._log.error(f"'{folder}' 폴더가 이미 존재합니다. 다른 이름을 사용하거나 '기존 프로젝트 열기'를 사용하세요.")
             return
 
         if not TEMPLATE_DIR.exists():
@@ -107,18 +165,77 @@ class Step1Widget(QWidget):
             self._log.error(f"폴더 생성 중 오류:\n{e}")
             return
 
-        # ── 글로벌 FX 심볼릭 링크 구축 ──────────────────────────────
+        # 글로벌 FX 심볼릭 링크 구축
         self._setup_fx_symlink(target)
 
         self._project_dir = target
         self._log.success(
             f"프로젝트 폴더가 생성되었습니다.\n"
+            f"폴더명: {folder}\n"
             f"경로: {target}\n"
-            "다음 단계로 넘어가세요."
+            "NEXT 버튼을 눌러 다음 단계로 넘어가세요."
         )
         self._next_btn.setEnabled(True)
         self._folder_input.setEnabled(False)
         self._create_btn.setEnabled(False)
+
+    # ── 슬롯: 기존 프로젝트 열기 ─────────────────────────────
+
+    def _on_open(self):
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "기존 프로젝트 폴더 선택",
+            str(ROOT_DIR),
+        )
+        if not folder:
+            return
+
+        project_dir = Path(folder)
+
+        if not is_valid_project(project_dir):
+            self._log.error(
+                f"'{project_dir.name}' 은 유효한 Vivid 프로젝트 폴더가 아닙니다.\n"
+                "remotion/package.json 파일이 있는 폴더를 선택하세요."
+            )
+            return
+
+        self._project_dir = project_dir
+
+        # 진행 단계 감지
+        stage_idx = detect_stage(project_dir)
+        stage_names = {0: "1단계 (프로그램 생성)", 1: "2단계 (대본 기획)",
+                       2: "3단계 (소스 제작)",     3: "4단계 (기획안 조립)"}
+        stage_label = stage_names[stage_idx]
+
+        self._log.success(
+            f"프로젝트를 불러왔습니다: {project_dir.name}\n"
+            f"마지막 진행 단계: {stage_label}\n"
+            f"해당 단계로 이동합니다..."
+        )
+
+        if stage_idx == 0:
+            # 1단계: NEXT 버튼만 활성화
+            self._next_btn.setEnabled(True)
+        else:
+            # 2단계 이상: 모든 이전 단계에 project_dir 주입 후 바로 이동
+            self._jump_to_stage(stage_idx)
+
+    def _jump_to_stage(self, target_idx: int):
+        """project_dir을 모든 중간 단계에 주입하고 target_idx 화면으로 이동."""
+        for i in range(1, target_idx + 1):
+            widget = self._stack.widget(i)
+            if hasattr(widget, "set_project_dir"):
+                widget.set_project_dir(self._project_dir)
+        self._stack.setCurrentIndex(target_idx)
+
+    # ── 슬롯: NEXT (신규 생성 후 2단계 이동) ────────────────
+
+    def _go_next(self):
+        step2 = self._stack.widget(1)
+        step2.set_project_dir(self._project_dir)
+        self._stack.setCurrentIndex(1)
+
+    # ── 글로벌 FX 심볼릭 링크 ────────────────────────────────
 
     def _setup_fx_symlink(self, project_dir: Path):
         """
@@ -129,13 +246,11 @@ class Step1Widget(QWidget):
           - 심볼릭 링크 생성은 관리자 권한 또는 개발자 모드 활성화가 필요.
           - 권한 오류(OSError) 발생 시 기존 복사본을 유지하고 안내 메시지 출력.
         """
-        fx_dir  = project_dir / "remotion" / "src" / "components" / "fx"
-        link_target = SHARED_FX_DIR   # 절대 경로 → 심볼릭 링크 대상
+        fx_dir      = project_dir / "remotion" / "src" / "components" / "fx"
+        link_target = SHARED_FX_DIR
 
-        # shared_fx 폴더 보장 (theme.py 에서 생성되지만 이중 확인)
         link_target.mkdir(parents=True, exist_ok=True)
 
-        # ① 기존 복사된 fx/ 폴더 삭제
         if fx_dir.exists() or fx_dir.is_symlink():
             try:
                 if fx_dir.is_symlink():
@@ -146,7 +261,6 @@ class Step1Widget(QWidget):
                 self._log.error(f"[FX 링크] 기존 fx/ 폴더 삭제 실패:\n{e}")
                 return
 
-        # ② 심볼릭 링크 생성 (directory=True: Windows 디렉토리 심링크)
         try:
             os.symlink(str(link_target), str(fx_dir), target_is_directory=True)
             self._log.info(
@@ -154,7 +268,6 @@ class Step1Widget(QWidget):
                 f"  {fx_dir}\n  → {link_target}"
             )
         except OSError as e:
-            # Windows 권한 부족 시 → 기존 복사본 방식으로 폴백
             self._log.warning(
                 f"[FX 링크] 심볼릭 링크 생성 실패 (권한 부족).\n"
                 f"  오류: {e}\n"
@@ -162,7 +275,6 @@ class Step1Widget(QWidget):
                 "  PowerShell을 관리자 권한으로 실행하세요.\n"
                 "  이번 프로젝트는 복사본 방식으로 진행됩니다."
             )
-            # 폴백: shared_fx 내용을 fx_dir 로 복사
             try:
                 if any(link_target.iterdir()):
                     shutil.copytree(str(link_target), str(fx_dir))
@@ -170,11 +282,6 @@ class Step1Widget(QWidget):
                     fx_dir.mkdir(parents=True, exist_ok=True)
             except Exception:
                 fx_dir.mkdir(parents=True, exist_ok=True)
-
-    def _go_next(self):
-        step2 = self._stack.widget(1)
-        step2.set_project_dir(self._project_dir)
-        self._stack.setCurrentIndex(1)
 
     # ── 공개 접근자 ──────────────────────────────────────────
 
