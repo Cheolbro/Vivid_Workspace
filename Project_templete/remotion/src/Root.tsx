@@ -13,7 +13,7 @@ export const RemotionRoot: React.FC = () => {
         id="VividOverlay"
         component={VividComposition}
         // Python 백엔드가 base_timeline.json 기반으로 아래 값을 주입합니다
-        durationInFrames={1800}  // 기본값 60초@30fps
+        durationInFrames={1800} // 기본값 60초@30fps
         fps={30}
         width={1920}
         height={1080}

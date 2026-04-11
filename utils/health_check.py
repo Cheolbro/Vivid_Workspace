@@ -24,6 +24,10 @@ REMOTION_DIR = ROOT_DIR / "Project_templete" / "remotion"
 # Windows: 콘솔 창 숨김 플래그
 _HIDDEN = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
 
+# Windows에서 .cmd 확장자 자동 처리 (Python subprocess는 .cmd를 자동 탐색하지 않음)
+_NPX  = "npx.cmd"  if sys.platform == "win32" else "npx"
+_NPM  = "npm.cmd"  if sys.platform == "win32" else "npm"
+
 
 # ──────────────────────────────────────────────
 # Worker
@@ -37,24 +41,27 @@ class HealthCheckWorker(QObject):
     npm_done    = Signal(bool, str)   # (success, message)
 
     TOOLS: dict[str, tuple[list[str], str]] = {
-        "node":    (["node", "--version"],          "Node.js"),
-        "ffmpeg":  (["ffmpeg", "-version"],         "FFmpeg"),
-        "remotion":(["npx", "remotion", "--version"], "Remotion (npx)"),
+        "node":    (["node", "--version"],                    "Node.js"),
+        "ffmpeg":  (["ffmpeg", "-version"],                   "FFmpeg"),
+        "remotion":([_NPX, "remotion", "--version"],          "Remotion (npx)"),
     }
 
     def run_check(self):
         results: dict[str, tuple[bool, str]] = {}
         for key, (cmd, label) in self.TOOLS.items():
+            # remotion은 node_modules가 있는 REMOTION_DIR 에서 실행해야 함
+            cwd = str(REMOTION_DIR) if key == "remotion" else None
             try:
                 r = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=20,
-                    **_HIDDEN,
+                    cwd=cwd, **_HIDDEN,
                 )
-                if r.returncode == 0:
-                    msg = (r.stdout.strip() or r.stderr.strip())[:80]
-                    results[key] = (True, msg or "OK")
+                # npx remotion --version 은 usage 출력 후 exit code 1 반환 → 정상 처리
+                out = (r.stdout.strip() or r.stderr.strip())[:80]
+                if r.returncode == 0 or (key == "remotion" and "@remotion/cli" in out):
+                    results[key] = (True, out or "OK")
                 else:
-                    results[key] = (False, (r.stderr.strip() or r.stdout.strip())[:80])
+                    results[key] = (False, out)
             except FileNotFoundError:
                 results[key] = (False, f"{label} 실행 파일을 찾을 수 없습니다")
             except subprocess.TimeoutExpired:
@@ -67,7 +74,7 @@ class HealthCheckWorker(QObject):
     def run_npm_install(self):
         try:
             proc = subprocess.run(
-                ["npm", "install"],
+                [_NPM, "install"],
                 cwd=str(REMOTION_DIR),
                 capture_output=True, text=True, timeout=300,
                 **_HIDDEN,
