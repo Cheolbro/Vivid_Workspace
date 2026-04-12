@@ -20,6 +20,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import webbrowser
 from pathlib import Path
@@ -40,10 +41,22 @@ from utils.widgets import (
 from utils.backend_ext import generate_compositions, save_render_cache
 from utils.fx_gallery import FxGalleryDialog
 from utils.step4_workers import (
-    ROOT_DIR, CATALOG_PATH, CONFIG_PATH, _NPX,
+    ROOT_DIR, CATALOG_PATH, CONFIG_PATH, _NPX, _NPM,
     parse_plan_json, detect_custom_fx,
     RenderWorker, VrewWorker, GeminiWorker, SemanticMatchWorker,
 )
+
+
+def _find_free_port(start: int, end: int) -> int:
+    import socket
+    for p in range(start, end):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(('127.0.0.1', p))
+                return p
+            except OSError:
+                continue
+    return start
 
 
 # ══════════════════════════════════════════════
@@ -239,6 +252,14 @@ class Step4Widget(QWidget):
         self._studio_proc: subprocess.Popen | None = None
         self._studio_port: int = 3000
 
+        # VIVID Studio 에디터 서버 (FastAPI daemon thread)
+        self._editor_thread: threading.Thread | None = None
+        self._editor_port: int = 8000
+
+        # VIVID Studio Vite dev 서버 프로세스
+        self._vite_proc: subprocess.Popen | None = None
+        self._vite_port: int = 4000
+
         self._build_ui()
 
     # ── UI 구성 ──────────────────────────────────────────────────────────
@@ -334,7 +355,7 @@ class Step4Widget(QWidget):
         # ─────────────────────────────────────────────────
         # STEP B: Remotion 제어
         # ─────────────────────────────────────────────────
-        lbl_b = QLabel("[ STEP B ]  Remotion 미리보기 / 투명 렌더링")
+        lbl_b = QLabel("[ STEP B ]  Remotion 렌더링 / VIVID Studio")
         lbl_b.setStyleSheet(
             f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;"
         )
@@ -343,14 +364,6 @@ class Step4Widget(QWidget):
         row_b = QHBoxLayout()
         row_b.setSpacing(10)
 
-        self._preview_btn = QPushButton("▶  Remotion 미리보기")
-        self._preview_btn.setEnabled(False)
-        self._preview_btn.setToolTip(
-            "Remotion Studio를 열어 시각 효과 타이밍을 실시간 검수합니다"
-        )
-        self._preview_btn.clicked.connect(self._on_preview_click)
-        row_b.addWidget(self._preview_btn)
-
         self._render_btn = QPushButton("🎬  Remotion 투명 렌더링")
         self._render_btn.setEnabled(False)
         self._render_btn.setToolTip(
@@ -358,6 +371,14 @@ class Step4Widget(QWidget):
         )
         self._render_btn.clicked.connect(self._on_render_click)
         row_b.addWidget(self._render_btn)
+
+        self._studio_btn = QPushButton("▶🖊  미리보기 + VIVID Studio")
+        self._studio_btn.setEnabled(False)
+        self._studio_btn.setToolTip(
+            "Custom FX 매칭 → Remotion Studio(미리보기) + VIVID Studio(편집) 동시 실행"
+        )
+        self._studio_btn.clicked.connect(self._on_vivid_studio_click)
+        row_b.addWidget(self._studio_btn)
 
         self._abort_btn = QPushButton("⏹  중단")
         self._abort_btn.setEnabled(False)
@@ -470,10 +491,15 @@ class Step4Widget(QWidget):
         self._studio_proc = None
         self._studio_port = 3000
 
+        # 프로젝트 변경 시 Vite 프로세스 종료 (FastAPI는 daemon이라 자동 종료)
+        if self._vite_proc is not None and self._vite_proc.poll() is None:
+            self._vite_proc.terminate()
+        self._vite_proc = None
+
         self._drop_zone.reset()
         self._log.clear()
-        self._preview_btn.setEnabled(False)
         self._render_btn.setEnabled(False)
+        self._studio_btn.setEnabled(False)
         self._vrew_btn.setEnabled(False)
         self._open_btn.setEnabled(False)
         self._progress.setVisible(False)
@@ -486,8 +512,8 @@ class Step4Widget(QWidget):
                 try:
                     self._plan = parse_plan_json(plan)
                     self._drop_zone.set_ready("remotion_plan.json")
-                    self._preview_btn.setEnabled(True)
                     self._render_btn.setEnabled(True)
+                    self._studio_btn.setEnabled(True)
                     self._log.success("기획안 파일이 확인되었습니다.")
                     self._log.info("Remotion 실행 또는 렌더링 버튼을 눌러주세요.")
                 except Exception:
@@ -602,16 +628,16 @@ class Step4Widget(QWidget):
             dlg = PreflightDialog(truly_new, parent=self)
             if dlg.exec() == PreflightDialog.DialogCode.Accepted:
                 self._log.success("Custom FX 코딩 완료. 미리보기 또는 렌더링을 진행하세요.")
-                self._preview_btn.setEnabled(True)
                 self._render_btn.setEnabled(True)
+                self._studio_btn.setEnabled(True)
             else:
                 self._log.info("Custom FX 코딩이 취소되었습니다. 준비 후 다시 업로드하세요.")
                 self._drop_zone.reset()
                 self._plan = None
         else:
             self._log.info("미리보기 또는 렌더링 버튼을 눌러주세요.")
-            self._preview_btn.setEnabled(True)
             self._render_btn.setEnabled(True)
+            self._studio_btn.setEnabled(True)
 
     # ── §A: 프로젝트 input 폴더 열기 ────────────────────────────────────────
 
@@ -634,6 +660,118 @@ class Step4Widget(QWidget):
         """FX 갤러리 팝업 열기 (캐시 있으면 즉시, 없으면 파싱 후 표시)"""
         dlg = FxGalleryDialog(CATALOG_PATH, parent=self)
         dlg.exec()
+
+    # ── §B: VIVID Studio 인터랙티브 에디터 ──────────────────────────────────
+
+    def _on_vivid_studio_click(self):
+        """
+        Remotion Studio(미리보기) + VIVID Studio(편집) 일괄 실행:
+          1. Custom FX 시맨틱 매칭 (필요시)
+          2. Remotion Studio 실행
+          3. FastAPI 브릿지 서버 시작
+          4. Vite dev 서버 시작
+        """
+        if self._project_dir is None:
+            self._log.error("프로젝트 폴더가 없습니다. 1단계로 돌아가세요.")
+            return
+
+        # ── 이미 모두 실행 중이면 브라우저 두 개 모두 오픈 ──────────────────
+        vite_alive = (
+            self._vite_proc is not None and self._vite_proc.poll() is None
+        )
+        api_alive = (
+            self._editor_thread is not None and self._editor_thread.is_alive()
+        )
+        studio_alive = (
+            self._studio_proc is not None and self._studio_proc.poll() is None
+        )
+
+        if vite_alive and api_alive and studio_alive:
+            vite_url = f"http://127.0.0.1:{self._vite_port}"
+            studio_url = f"http://localhost:{self._studio_port}"
+            self._log.info("모든 서비스가 이미 실행 중입니다.")
+            webbrowser.open(studio_url)
+            webbrowser.open(vite_url)
+            return
+
+        if self._plan is None:
+            self._log.error("기획안(remotion_plan.json)을 먼저 로드하세요.")
+            return
+
+        # Custom FX 감지
+        custom_effs = detect_custom_fx(self._plan)
+
+        if custom_effs:
+            # ① PreflightDialog — Claude에게 코딩 요청
+            dlg = PreflightDialog(custom_effs, parent=self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return   # 사용자가 취소
+
+            # ② FX 파일 동기화 (심볼릭 링크 / 복사)
+            self._sync_fx_files(self._project_dir / "remotion")
+
+            # ③ fx_catalog.txt 읽기
+            if not CATALOG_PATH.exists():
+                self._log.error("fx_catalog.txt 파일이 없습니다. FX 카탈로그를 확인하세요.")
+                return
+            catalog_text = CATALOG_PATH.read_text(encoding="utf-8")
+
+            # ④ SemanticMatchWorker 실행 (Gemini 일괄 매칭)
+            self._log.info(
+                f"Gemini로 Custom FX {len(custom_effs)}개 시맨틱 매칭 중...\n"
+                "(첫 실행 시 브라우저 OAuth 로그인 창이 열립니다)"
+            )
+            self._match_thread = QThread(self)
+            self._match_worker = SemanticMatchWorker(custom_effs, catalog_text)
+            self._match_worker.moveToThread(self._match_thread)
+            self._match_thread.started.connect(self._match_worker.run)
+            self._match_worker.finished.connect(self._on_match_done)
+            self._match_worker.error.connect(self._on_match_error)
+            self._match_worker.finished.connect(self._match_thread.quit)
+            self._match_worker.error.connect(self._match_thread.quit)
+            self._match_thread.start()
+        else:
+            # Custom FX 없으면 즉시 일괄 실행
+            self._launch_both()
+
+    def _poll_editor_ready(
+        self,
+        api_port: int,
+        vite_port: int,
+        vite_url: str,
+        attempts: int,
+    ) -> None:
+        """FastAPI + Vite 서버가 모두 응답할 때까지 폴링 (최대 60회 = 12초)"""
+        import socket
+        MAX_ATTEMPTS = 60
+        INTERVAL_MS  = 200
+
+        def _port_open(p: int) -> bool:
+            try:
+                with socket.create_connection(("127.0.0.1", p), timeout=0.2):
+                    return True
+            except OSError:
+                return False
+
+        if _port_open(api_port) and _port_open(vite_port):
+            self._log.success(
+                f"VIVID Studio 준비 완료 → 브라우저 오픈\n{vite_url}"
+            )
+            webbrowser.open(vite_url)
+            return
+
+        if attempts >= MAX_ATTEMPTS:
+            self._log.error(
+                "VIVID Studio 서버 시작 시간 초과.\n"
+                f"  FastAPI: http://127.0.0.1:{api_port}/api/status\n"
+                f"  Vite:    {vite_url}"
+            )
+            return
+
+        QTimer.singleShot(
+            INTERVAL_MS,
+            lambda: self._poll_editor_ready(api_port, vite_port, vite_url, attempts + 1),
+        )
 
     # ── §B: 미리보기 ─────────────────────────────────────────────────────
 
@@ -697,48 +835,6 @@ class Step4Widget(QWidget):
             lambda: self._poll_studio_ready(port, url, attempts + 1),
         )
 
-    def _on_preview_click(self):
-        """Remotion Studio 미리보기 실행"""
-        if self._project_dir is None or self._plan is None:
-            self._log.error("프로젝트와 기획안을 먼저 로드하세요.")
-            return
-
-        # Custom FX 감지
-        custom_effs = detect_custom_fx(self._plan)
-
-        if custom_effs:
-            # ① PreflightDialog — Claude에게 코딩 요청
-            dlg = PreflightDialog(custom_effs, parent=self)
-            if dlg.exec() != QDialog.DialogCode.Accepted:
-                return   # 사용자가 취소
-
-            # ② FX 파일 동기화 (심볼릭 링크 / 복사)
-            self._sync_fx_files(self._project_dir / "remotion")
-
-            # ③ fx_catalog.txt 읽기
-            if not CATALOG_PATH.exists():
-                self._log.error("fx_catalog.txt 파일이 없습니다. FX 카탈로그를 확인하세요.")
-                return
-            catalog_text = CATALOG_PATH.read_text(encoding="utf-8")
-
-            # ④ SemanticMatchWorker 실행 (Gemini 일괄 매칭)
-            self._log.info(
-                f"Gemini로 Custom FX {len(custom_effs)}개 시맨틱 매칭 중...\n"
-                "(첫 실행 시 브라우저 OAuth 로그인 창이 열립니다)"
-            )
-            self._match_thread = QThread(self)
-            self._match_worker = SemanticMatchWorker(custom_effs, catalog_text)
-            self._match_worker.moveToThread(self._match_thread)
-            self._match_thread.started.connect(self._match_worker.run)
-            self._match_worker.finished.connect(self._on_match_done)
-            self._match_worker.error.connect(self._on_match_error)
-            self._match_worker.finished.connect(self._match_thread.quit)
-            self._match_worker.error.connect(self._match_thread.quit)
-            self._match_thread.start()
-        else:
-            # Custom FX 없으면 즉시 미리보기 실행
-            self._launch_preview()
-
     def _on_match_done(self, matches: dict):
         """SemanticMatchWorker 완료 — 매칭 결과를 plan에 역주입 후 미리보기 실행"""
         applied = []
@@ -763,13 +859,13 @@ class Step4Widget(QWidget):
         report = "\n".join(applied + unmatched)
         self._log.success(f"시맨틱 매칭 완료:\n{report}")
 
-        self._launch_preview()
+        self._launch_both()
 
     def _on_match_error(self, msg: str):
         """SemanticMatchWorker 실패"""
-        self._log.error(f"FX 시맨틱 매칭 실패:\n{msg}\n\n매칭 없이 미리보기를 계속합니다.")
-        # 매칭 실패해도 미리보기는 계속 (Custom FX는 건너뜀)
-        self._launch_preview()
+        self._log.error(f"FX 시맨틱 매칭 실패:\n{msg}\n\n매칭 없이 일괄 실행을 계속합니다.")
+        # 매칭 실패해도 실행은 계속 (Custom FX는 건너뜀)
+        self._launch_both()
 
     def _launch_preview(self):
         """Composition 재생성 + Remotion Studio 실행"""
@@ -803,15 +899,7 @@ class Step4Widget(QWidget):
         self._sync_fx_files(remotion_dir)
 
         # ── 사용 가능한 포트 탐색 ─────────────────────────────────────
-        import socket
-        port = 3000
-        for p in range(3000, 3020):
-            try:
-                with socket.create_connection(("localhost", p), timeout=0.3):
-                    pass  # 포트 점유 중 → 다음 포트 시도
-            except OSError:
-                port = p  # 비어있는 첫 포트
-                break
+        port = _find_free_port(3000, 3100)
 
         self._log.info(
             f"Remotion Studio 시작 중 (포트 {port})… "
@@ -840,6 +928,92 @@ class Step4Widget(QWidget):
         # ── 고정 딜레이 대신 포트 응답 폴링 후 브라우저 오픈 ──────────
         self._poll_studio_ready(port, url, attempts=0)
 
+    def _launch_both(self):
+        """Remotion Studio + VIVID Studio(FastAPI, Vite) 일괄 실행"""
+        # 1. Remotion Studio 실행
+        self._launch_preview()
+
+        import socket
+        vite_url = f"http://127.0.0.1:{self._vite_port}"
+
+        # ── 2. FastAPI 서버 시작 ─────────────────────────────────────────
+        api_alive = (
+            self._editor_thread is not None and self._editor_thread.is_alive()
+        )
+        if not api_alive:
+            try:
+                from utils.editor_server import start_server
+            except ImportError as e:
+                self._log.error(
+                    f"editor_server 임포트 실패:\n{e}\n"
+                    "fastapi/uvicorn 설치 여부를 확인하세요."
+                )
+                return
+
+            api_port = _find_free_port(8000, 8100)
+            self._editor_port = api_port
+
+            t = threading.Thread(
+                target=start_server,
+                args=(self._project_dir, api_port),
+                daemon=True,
+            )
+            t.start()
+            self._editor_thread = t
+            self._log.info(f"FastAPI 브릿지 서버 시작 중 (port {api_port})…")
+
+        # ── 3. Vite dev 서버 시작 ────────────────────────────────────────
+        vite_alive = (
+            self._vite_proc is not None and self._vite_proc.poll() is None
+        )
+        if not vite_alive:
+            from utils.step4_workers import ROOT_DIR
+            vivid_studio_dir = ROOT_DIR / "vivid_studio"
+
+            if not vivid_studio_dir.exists():
+                self._log.error(
+                    f"vivid_studio/ 폴더가 없습니다: {vivid_studio_dir}\n"
+                    "워크스페이스 루트에 vivid_studio/ 폴더가 있는지 확인하세요."
+                )
+                return
+            if not (vivid_studio_dir / "node_modules").exists():
+                self._log.error(
+                    "vivid_studio/node_modules 없음. 터미널에서:\n"
+                    f"  cd {vivid_studio_dir}\n  npm install"
+                )
+                return
+
+            # 빈 포트 스캔 (4000~4100)
+            vite_port = _find_free_port(4000, 4100)
+            self._vite_port = vite_port
+            vite_url = f"http://127.0.0.1:{self._vite_port}"
+
+            try:
+                self._vite_proc = subprocess.Popen(
+                    [_NPM, "run", "dev", "--", "--port", str(vite_port)],
+                    cwd=str(vivid_studio_dir),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=(
+                        subprocess.CREATE_NEW_PROCESS_GROUP
+                        if sys.platform == "win32" else 0
+                    ),
+                )
+                self._log.info(
+                    f"Vite dev 서버 시작 중 (port {self._vite_port})…"
+                )
+            except Exception as e:
+                self._log.error(f"Vite 서버 시작 실패:\n{e}")
+                return
+
+        # ── 4. 양쪽 준비 완료 후 브라우저 오픈 ──────────────────────────
+        self._poll_editor_ready(
+            api_port=self._editor_port,
+            vite_port=self._vite_port,
+            vite_url=vite_url,
+            attempts=0,
+        )
+
     # ── §B: 투명 렌더링 ──────────────────────────────────────────────────
 
     def _on_render_click(self):
@@ -863,7 +1037,6 @@ class Step4Widget(QWidget):
 
         self._log.info("렌더링 준비 중 (Diff-Check 실행)...")
         self._render_btn.setEnabled(False)
-        self._preview_btn.setEnabled(False)
         self._abort_btn.setEnabled(True)
         self._progress.setVisible(True)
         self._progress.setValue(0)
@@ -908,7 +1081,6 @@ class Step4Widget(QWidget):
         self._progress.setFormat("렌더링 완료")
         self._abort_btn.setEnabled(False)
         self._render_btn.setEnabled(True)
-        self._preview_btn.setEnabled(True)
         self._vrew_btn.setEnabled(True)
 
         # ── 최종 리포트 (골드 텍스트) ──
@@ -934,7 +1106,6 @@ class Step4Widget(QWidget):
         self._log.error(f"렌더링 오류:\n{msg}")
         self._abort_btn.setEnabled(False)
         self._render_btn.setEnabled(True)
-        self._preview_btn.setEnabled(True)
         self._progress.setFormat("오류 발생")
 
     def _on_abort_click(self):

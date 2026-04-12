@@ -1,9 +1,9 @@
 import React from "react";
 import { Img, staticFile } from "remotion";
-import { OilFillFX } from "../components/fx/OilFillFX";
 import { SubtitleOverlay } from "../components/SubtitleOverlay";
-import { TypewriterFX } from "../components/fx/TypewriterFX";
 import { PopupElement } from "../components/PopupElement";
+import { OilFillFX } from "../components/fx/OilFillFX";
+import { TypewriterFX } from "../components/fx/TypewriterFX";
 import { HighlighterFX } from "../components/fx/HighlighterFX";
 
 interface Props {

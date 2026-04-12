@@ -10,6 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import psutil
 from PySide6.QtCore import QObject, Signal, QThread, Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
@@ -89,6 +90,35 @@ class HealthCheckWorker(QObject):
             self.npm_done.emit(False, str(e))
 
 
+def kill_zombie_processes() -> list[str]:
+    """
+    Remotion(3000~3099) / Vite(4000~4099) / FastAPI(8000~8100) 포트 대역에서
+    node, uvicorn, python 계열 좀비 프로세스를 찾아 terminate() 한다.
+    종료된 프로세스 설명 문자열 목록을 반환한다.
+    """
+    PORT_RANGES = [range(3000, 3100), range(4000, 4100), range(8000, 8101)]
+    TARGET_NAMES = {"node", "uvicorn", "python"}
+    killed: list[str] = []
+    try:
+        for conn in psutil.net_connections(kind="tcp"):
+            if not (conn.laddr and conn.pid):
+                continue
+            port = conn.laddr.port
+            if not any(port in r for r in PORT_RANGES):
+                continue
+            try:
+                proc = psutil.Process(conn.pid)
+                name = proc.name().lower().replace(".exe", "")
+                if any(t in name for t in TARGET_NAMES):
+                    proc.terminate()
+                    killed.append(f"{proc.name()}(PID:{conn.pid}, port:{port})")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    except Exception:
+        pass
+    return killed
+
+
 # ──────────────────────────────────────────────
 # Dialog
 # ──────────────────────────────────────────────
@@ -127,6 +157,9 @@ class HealthCheckDialog(QDialog):
         self._nm_status:   QLabel
         self._npm_btn:     QPushButton
         self._close_btn:   QPushButton
+
+        # 좀비 프로세스 정리 (동기, UI 빌드 전 실행)
+        self._zombie_killed: list[str] = kill_zombie_processes()
 
         self._build_ui()
         self._thread.start()
@@ -171,6 +204,24 @@ class HealthCheckDialog(QDialog):
             self._row_labels[key] = status_lbl
 
         layout.addWidget(self._divider())
+
+        # 좀비 프로세스 정리 결과 행
+        zombie_row = QHBoxLayout()
+        zombie_name = QLabel("  좀비 프로세스 정리")
+        zombie_name.setFixedWidth(200)
+        zombie_name.setStyleSheet("font-size:12px;")
+        if self._zombie_killed:
+            detail = ", ".join(self._zombie_killed[:3])  # 최대 3개만 표시
+            more = f" 외 {len(self._zombie_killed)-3}개" if len(self._zombie_killed) > 3 else ""
+            zombie_status = QLabel(f"🧹  {len(self._zombie_killed)}개 종료: {detail}{more}")
+            zombie_status.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:11px;")
+        else:
+            zombie_status = QLabel("✅  잔여 프로세스 없음")
+            zombie_status.setStyleSheet(f"color:{C_SUCCESS}; font-size:11px;")
+        zombie_row.addWidget(zombie_name)
+        zombie_row.addWidget(zombie_status)
+        zombie_row.addStretch()
+        layout.addLayout(zombie_row)
 
         # node_modules 행
         nm_row = QHBoxLayout()

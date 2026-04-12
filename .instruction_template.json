@@ -1,0 +1,36 @@
+{
+  "_readme": [
+    "Gemini CLI 작업 지시서 템플릿.",
+    "Claude는 이 스키마를 그대로 복사하여 .claude_instruction.json을 작성한다.",
+    "규칙: 기존 파일 수정 → changes[].find/replace 필수. 추상 설명만으로는 작성 금지.",
+    "규칙: verify_after 생략 금지. TypeScript면 tsc, Python이면 py_compile."
+  ],
+
+  "task_id": "작업 식별자 (예: add-playhead-feature)",
+
+  "context": "이 작업에 필요한 최소 맥락만 기술. 파일 간 의존관계, 사용 라이브러리 등.",
+
+  "verify_after": "Gemini 완료 후 Claude가 실행할 검증 명령어. 예시: 'cd vivid_studio && npx tsc --noEmit' / 'python -m py_compile utils/foo.py'",
+
+  "changes": [
+    {
+      "_note": "기존 파일 수정: find는 파일 내 유일한 코드 블록이어야 함 (공백/줄바꿈 포함).",
+      "type": "modify",
+      "file": "path/to/existing/file.tsx",
+      "find": "교체할 정확한 기존 코드",
+      "replace": "새 코드"
+    },
+    {
+      "_note": "신규 파일 생성: content_spec에 파일 전체 내용을 상세히 기술.",
+      "type": "create",
+      "file": "path/to/new/file.tsx",
+      "content_spec": "파일 전체 내용 명세"
+    }
+  ],
+
+  "constraints": [
+    "파일당 changes 항목 5개 이하 권장. 초과 시 task_id를 분리하여 순차 실행.",
+    "기존 import/타입/스타일 변수명 유지.",
+    "그 외 프로젝트 고유 제약 사항 추가."
+  ]
+}

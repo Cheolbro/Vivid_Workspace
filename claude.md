@@ -1,3 +1,25 @@
+# Global rule [Hybrid Coding Protocol]
+
+- **Role:** Claude(Architect/Reviewer) & Gemini CLI(Builder).
+- **Rule:**
+  - **Gemini 호출:** 아래 경우 반드시 Gemini에게 위임.
+    - 신규 파일 생성 (줄 수 무관)
+    - 반복 패턴/boilerplate가 많은 코드
+    - 여러 파일 동시 수정
+    - 기존 파일 수정이 50줄 이상이면 Gemini 호출 (사유 무관)
+  - **Claude 직접:** 기존 파일 수정 50줄 미만 (사유 무관)
+  - `.claude_instruction.json` (설계 지시서)은 Claude가 직접 작성. 줄 수 제한 없음.
+- **Workflow:**
+  1. `.instruction_template.json` 스키마에 따라 `.claude_instruction.json` 작성.
+     - 기존 파일 수정은 반드시 `find`/`replace` 형식으로 명시 (추상 설명 금지).
+     - `verify_after` 필드에 검증 명령어 포함.
+  2. 아래 명령어로 실행 (verify + 자동 수정 루프를 Gemini가 담당):
+     ```
+     cat GEMINI_CONTEXT.md .claude_instruction.json | gemini --yolo -p "다음 JSON 지시사항대로 코딩해줘. 완료 후 verify_after 명령어를 실행하고, 실패 시 에러를 수정한 뒤 재실행. 통과할 때까지 최대 2회 반복."
+     ```
+  3. `git diff`로 변경사항 검수 후 반드시 `git add .` 수행.
+- **Cleanup:** 작업 완료 후 생성된 `.json` 파일 삭제.
+
 # Vivid 프로젝트 마스터 가이드: 유튜브 영상편집 자동화 GUI 프로그램
 
 ## 1. 프로젝트 목표
@@ -71,6 +93,12 @@
   - 미디어 바이너리(`.mp4`, `.mp3` 등) → 추적 제외.
   - `shared_fx/*.tsx` → `!` 예외 규칙으로 Git 추적 허용 (FX 코드는 소스 자산).
 
+### 3-F. 기획 자동화 엔진: VIVID Radar (2026-04 구현)
+
+- **정의**: A1(채널 발굴), A2(주제 탐색), A3(제목 최적화)가 통합된 지능형 기획 파이프라인.
+- **격리 원칙**: 해당 모듈은 `vivid_radar/` 폴더 내에 완벽히 격리된 모노레포 구조로 개발한다.
+- **최우선 참조**: `vivid_radar/` 내부의 모든 코드 작성 및 로직 수정 시, 해당 폴더 안의 **`radar_spec.md`**를 마스터 가이드보다 높은 우선순위의 'Source of Truth'로 간주하여 참조한다.
+
 ## 4. 세부 매뉴얼 참조(External spec)
 
 작업의 종류에 따라 아래 문서를 열어서(읽고) 참조하십시오.
@@ -79,3 +107,4 @@
 - Backend: backend_rules.md (파싱/Watchdog/Vrew 조립 로직)
 - Remotion: remotion_spec.md (디자인/CSS/투명 렌더링 규칙)
 - FX List: fx_catalog.md (현재 가용한 효과 명세)
+- Radar Spec: vivid_radar/radar_spec.md (기획 자동화 엔진 A1, A2, A3 상세 명세)

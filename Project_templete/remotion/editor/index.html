@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VIVID Studio</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: #1a1a2e;
+        color: #e0e0e0;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* ── 상단 헤더 ── */
+      header {
+        background: #16213e;
+        border-bottom: 1px solid #0f3460;
+        padding: 12px 24px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+      header h1 {
+        font-size: 16px;
+        font-weight: 700;
+        color: #e2b04a;
+        letter-spacing: 1px;
+      }
+      .badge {
+        font-size: 10px;
+        background: #0f3460;
+        color: #7ec8e3;
+        padding: 2px 8px;
+        border-radius: 10px;
+        border: 1px solid #1a4a7a;
+      }
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #4caf50;
+        animation: pulse 2s infinite;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.4;
+        }
+      }
+
+      /* ── 메인 레이아웃 ── */
+      main {
+        flex: 1;
+        display: flex;
+        overflow: hidden;
+      }
+
+      /* ── 중앙: 미리보기 영역 ── */
+      .preview-area {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #0d0d1a;
+        gap: 20px;
+      }
+      .preview-placeholder {
+        width: 640px;
+        height: 360px;
+        background: #16213e;
+        border: 2px dashed #0f3460;
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        color: #4a4a6a;
+      }
+      .preview-placeholder .icon {
+        font-size: 48px;
+      }
+      .preview-placeholder p {
+        font-size: 14px;
+      }
+      .preview-placeholder small {
+        font-size: 11px;
+        color: #3a3a5a;
+      }
+
+      /* ── 우측: 속성 패널 ── */
+      .panel {
+        width: 300px;
+        background: #16213e;
+        border-left: 1px solid #0f3460;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .panel-header {
+        padding: 14px 16px;
+        border-bottom: 1px solid #0f3460;
+        font-size: 12px;
+        font-weight: 600;
+        color: #7ec8e3;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .panel-body {
+        flex: 1;
+        padding: 16px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      /* ── API 테스트 카드 ── */
+      .card {
+        background: #1e2a4a;
+        border: 1px solid #0f3460;
+        border-radius: 6px;
+        padding: 12px;
+      }
+      .card h3 {
+        font-size: 11px;
+        font-weight: 600;
+        color: #e2b04a;
+        margin-bottom: 8px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .field {
+        margin-bottom: 8px;
+      }
+      .field label {
+        display: block;
+        font-size: 10px;
+        color: #7ec8e3;
+        margin-bottom: 3px;
+      }
+      .field input {
+        width: 100%;
+        background: #0f1a30;
+        border: 1px solid #1a3a5a;
+        border-radius: 4px;
+        color: #e0e0e0;
+        padding: 5px 8px;
+        font-size: 11px;
+        outline: none;
+      }
+      .field input:focus {
+        border-color: #e2b04a;
+      }
+
+      .btn {
+        width: 100%;
+        padding: 8px 12px;
+        border: none;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: opacity 0.15s;
+      }
+      .btn:hover {
+        opacity: 0.85;
+      }
+      .btn-primary {
+        background: #e2b04a;
+        color: #1a1a2e;
+      }
+      .btn-secondary {
+        background: #0f3460;
+        color: #7ec8e3;
+        margin-top: 6px;
+      }
+
+      /* ── 로그 영역 ── */
+      .log-area {
+        background: #0a0f1e;
+        border: 1px solid #1a2a3a;
+        border-radius: 4px;
+        padding: 8px;
+        font-size: 10px;
+        font-family: "Consolas", monospace;
+        color: #4caf50;
+        min-height: 80px;
+        max-height: 150px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .log-error {
+        color: #ff5252;
+      }
+      .log-info {
+        color: #7ec8e3;
+      }
+
+      /* ── 하단 상태바 ── */
+      footer {
+        background: #0f1a30;
+        border-top: 1px solid #0f3460;
+        padding: 6px 24px;
+        font-size: 10px;
+        color: #4a4a6a;
+        display: flex;
+        justify-content: space-between;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="status-dot" id="dot"></div>
+      <h1>VIVID Studio</h1>
+      <span class="badge">Phase 1 — API Bridge</span>
+      <span id="project-label" style="font-size: 11px; color: #7ec8e3; margin-left: auto"></span>
+    </header>
+
+    <main>
+      <!-- 중앙 미리보기 -->
+      <div class="preview-area">
+        <div class="preview-placeholder">
+          <div class="icon">🎬</div>
+          <p>Remotion Player</p>
+          <small>Phase 2에서 @remotion/player 연동 예정</small>
+        </div>
+        <div style="font-size: 11px; color: #3a3a5a">
+          API 서버: <span id="api-url" style="color: #7ec8e3">http://127.0.0.1:8000</span>
+        </div>
+      </div>
+
+      <!-- 우측 속성 패널 -->
+      <aside class="panel">
+        <div class="panel-header">속성 패널</div>
+        <div class="panel-body">
+          <!-- 서버 상태 확인 -->
+          <div class="card">
+            <h3>서버 연결 테스트</h3>
+            <button class="btn btn-primary" onclick="checkStatus()">🔌 연결 확인</button>
+            <div class="log-area" id="status-log">대기 중...</div>
+          </div>
+
+          <!-- Plan 조회 -->
+          <div class="card">
+            <h3>기획안 (GET /api/plan)</h3>
+            <button class="btn btn-secondary" onclick="fetchPlan()">📥 기획안 불러오기</button>
+            <div class="log-area" id="plan-log">대기 중...</div>
+          </div>
+
+          <!-- Plan 수정 테스트 -->
+          <div class="card">
+            <h3>기획안 수정 테스트 (POST /api/plan)</h3>
+            <div class="field">
+              <label>수정할 슬라이드 인덱스</label>
+              <input type="number" id="slide-idx" value="0" min="0" />
+            </div>
+            <div class="field">
+              <label>새 duration (프레임 수)</label>
+              <input type="number" id="new-duration" value="90" min="1" />
+            </div>
+            <button class="btn btn-primary" onclick="patchPlan()">✏️ 수정 반영 (테스트)</button>
+            <div class="log-area" id="patch-log">대기 중...</div>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <footer>
+      <span>VIVID Studio v0.1 — Phase 1 Placeholder</span>
+      <span id="footer-time"></span>
+    </footer>
+
+    <script>
+      const API = "http://127.0.0.1:8000";
+      let _plan = null;
+
+      function log(id, msg, type = "") {
+        const el = document.getElementById(id);
+        const line = document.createElement("div");
+        line.className = type ? `log-${type}` : "";
+        line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        el.appendChild(line);
+        el.scrollTop = el.scrollHeight;
+      }
+
+      function clearLog(id) {
+        document.getElementById(id).innerHTML = "";
+      }
+
+      async function checkStatus() {
+        clearLog("status-log");
+        try {
+          const r = await fetch(`${API}/api/status`);
+          const d = await r.json();
+          log("status-log", `✅ 연결 성공`, "info");
+          log("status-log", `프로젝트: ${d.project_dir || "미설정"}`, "");
+          document.getElementById("dot").style.background = "#4caf50";
+          if (d.project_dir) {
+            document.getElementById("project-label").textContent =
+              "📂 " + d.project_dir.split(/[\\/]/).pop();
+          }
+        } catch (e) {
+          log("status-log", `❌ 연결 실패: ${e.message}`, "error");
+          document.getElementById("dot").style.background = "#ff5252";
+        }
+      }
+
+      async function fetchPlan() {
+        clearLog("plan-log");
+        try {
+          const r = await fetch(`${API}/api/plan`);
+          if (!r.ok) {
+            const d = await r.json();
+            log("plan-log", `❌ ${r.status}: ${d.detail}`, "error");
+            return;
+          }
+          _plan = await r.json();
+          const slideCount = _plan.slides?.length ?? 0;
+          const fxCount = (_plan.slides ?? []).reduce(
+            (acc, s) => acc + (s.effects?.length ?? 0),
+            0
+          );
+          log("plan-log", `✅ 기획안 로드 완료`, "info");
+          log("plan-log", `슬라이드 ${slideCount}개 / FX ${fxCount}개`);
+        } catch (e) {
+          log("plan-log", `❌ ${e.message}`, "error");
+        }
+      }
+
+      async function patchPlan() {
+        clearLog("patch-log");
+        if (!_plan) {
+          log("patch-log", "⚠️ 먼저 기획안을 불러오세요", "error");
+          return;
+        }
+        const idx = parseInt(document.getElementById("slide-idx").value, 10);
+        const dur = parseInt(document.getElementById("new-duration").value, 10);
+        if (!_plan.slides || idx >= _plan.slides.length) {
+          log("patch-log", `❌ 슬라이드 인덱스(${idx}) 범위 초과`, "error");
+          return;
+        }
+        const modified = JSON.parse(JSON.stringify(_plan)); // deep copy
+        modified.slides[idx].durationFrames = dur;
+
+        try {
+          const r = await fetch(`${API}/api/plan`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(modified),
+          });
+          const d = await r.json();
+          if (!r.ok) {
+            log("patch-log", `❌ ${r.status}: ${d.detail}`, "error");
+            return;
+          }
+          log("patch-log", `✅ 반영 완료 (백업: ${d.backup})`, "info");
+          log("patch-log", `슬라이드[${idx}].durationFrames = ${dur}`);
+          _plan = modified;
+        } catch (e) {
+          log("patch-log", `❌ ${e.message}`, "error");
+        }
+      }
+
+      // 페이지 로드 시 자동 연결 확인
+      window.addEventListener("load", () => {
+        checkStatus();
+        setInterval(() => {
+          document.getElementById("footer-time").textContent = new Date().toLocaleTimeString();
+        }, 1000);
+      });
+    </script>
+  </body>
+</html>

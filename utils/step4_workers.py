@@ -411,14 +411,37 @@ class SemanticMatchWorker(QObject):
             "적합한 컴포넌트가 없으면 가장 가까운 것을 선택하세요."
         )
 
-        # ── 4. Gemini 호출 ────────────────────────────────────────────
-        try:
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-            )
-            raw = response.text.strip()
+        # ── 4. Gemini 호출 (503/UNAVAILABLE 최대 3회 재시도) ────────────
+        _TRANSIENT_CODES = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")
+        MAX_RETRIES = 3
+        RETRY_DELAY = 5  # seconds
+        raw = ""
 
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                )
+                raw = response.text.strip()
+                break  # 성공 → 루프 탈출
+            except Exception as e:
+                err_str = str(e)
+                is_transient = any(c in err_str for c in _TRANSIENT_CODES)
+                if is_transient and attempt < MAX_RETRIES:
+                    time.sleep(RETRY_DELAY * attempt)
+                    continue  # 재시도
+                self.error.emit(
+                    f"시맨틱 매칭 오류 (시도 {attempt}/{MAX_RETRIES}):\n{e}"
+                )
+                return
+
+        if not raw:
+            self.error.emit(f"시맨틱 매칭 최대 재시도 초과 ({MAX_RETRIES}회)")
+            return
+
+        # ── 5. JSON 파싱 ──────────────────────────────────────────────
+        try:
             # JSON 추출 (응답에 마크다운이 섞여 있어도 처리)
             json_match = _re.search(r'\{[\s\S]*\}', raw)
             if not json_match:
@@ -437,4 +460,4 @@ class SemanticMatchWorker(QObject):
             self.finished.emit(matches)
 
         except Exception as e:
-            self.error.emit(f"시맨틱 매칭 오류:\n{e}")
+            self.error.emit(f"시맨틱 매칭 JSON 파싱 오류:\n{e}")

@@ -9,6 +9,9 @@ token.json
 asset/
 # 리모션 라이브러리
 Project_templete/remotion/node_modules/
+# VIVID Studio (Vite 에디터 앱)
+vivid_studio/node_modules/
+vivid_studio/dist/
 node_modules/
 # 개인 대본 파일
 input/

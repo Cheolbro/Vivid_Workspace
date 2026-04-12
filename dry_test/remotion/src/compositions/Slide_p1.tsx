@@ -1,10 +1,10 @@
 import React from "react";
 import { Img, staticFile } from "remotion";
-import { GlowTextFX } from "../components/fx/GlowTextFX";
 import { SubtitleOverlay } from "../components/SubtitleOverlay";
 import { PopupElement } from "../components/PopupElement";
 import { GoldenRayFX } from "../components/fx/GoldenRayFX";
 import { HighlighterFX } from "../components/fx/HighlighterFX";
+import { GlowTextFX } from "../components/fx/GlowTextFX";
 
 interface Props {
   previewMode?: boolean;

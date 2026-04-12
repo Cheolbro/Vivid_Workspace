@@ -1,11 +1,11 @@
 import React from "react";
 import { Img, staticFile } from "remotion";
-import { GlowTextFX } from "../components/fx/GlowTextFX";
 import { SubtitleOverlay } from "../components/SubtitleOverlay";
-import { OilLeakFX } from "../components/fx/OilLeakFX";
+import { UnderlineFX } from "../components/fx/UnderlineFX";
 import { PopupElement } from "../components/PopupElement";
 import { WarningFrameFX } from "../components/fx/WarningFrameFX";
-import { UnderlineFX } from "../components/fx/UnderlineFX";
+import { OilLeakFX } from "../components/fx/OilLeakFX";
+import { GlowTextFX } from "../components/fx/GlowTextFX";
 
 interface Props {
   previewMode?: boolean;
