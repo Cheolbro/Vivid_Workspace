@@ -1,47 +1,53 @@
 """
-main.py — Vivid 유튜브 영상편집 자동화 GUI
-엔트리 포인트: MainWindow + StepIndicator 조립 및 앱 실행.
-
-구조:
-  utils/theme.py      — 색상 상수 & 전역 QSS
-  utils/widgets.py    — 공통 UI 컴포넌트 (StatusLogger, DropZone, …)
-  utils/backend.py    — 파이썬 백엔드 로직 §1-§4 (파싱, PDF, SRT 등)
-  utils/backend_ext.py— 파이썬 백엔드 §5-§7 (FX생성, Diff렌더, Vrew조립)
-  steps/step1.py      — 1단계: 프로그램 생성
-  steps/step2.py      — 2단계: 대본 기획
-  steps/step3.py      — 3단계: 소스 제작 (Watchdog, PDF, 타임라인)
-  steps/step4.py      — 4단계: 영상 기획안 & Remotion 렌더링 & Vrew 조립
+main.py — Vivid 유튜브 영상편집 자동화 GUI 대통합
+- 사이드바 네비게이션 추가 (HotChannel, HotTopic, FindTitle, Studio)
+- VIVID Radar 모듈 통합
+- 기존 Studio 기능 보존 (Wrapping 방식)
 """
 
 import sys
+import os
+from pathlib import Path
+
+# VIVID Radar 모듈 경로 등록 (vivid_core 임포트 에러 해결)
+RADAR_PATH = str(Path(__file__).parent / "vivid_radar")
+if RADAR_PATH not in sys.path:
+    sys.path.append(RADAR_PATH)
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QLabel, QStackedWidget,
+    QPushButton, QFrame
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPalette
 
-from utils.theme import C_BG_MAIN, C_TEXT, C_HIGHLIGHT, C_SUCCESS, C_BORDER, GLOBAL_QSS
+from utils.theme import (
+    C_BG_MAIN, C_BG_SUB, C_TEXT, C_HIGHLIGHT, C_SUCCESS, C_BORDER, 
+    C_ACCENT, GLOBAL_QSS
+)
 from utils.health_check import HealthCheckDialog
 from steps.step1 import Step1Widget
 from steps.step2 import Step2Widget
 from steps.step3 import Step3Widget
-from steps.step4 import Step4Widget as _Step4Real
+from steps.step4 import Step4Widget
+
+from utils.radar_a1_widget import A1Widget
+from utils.radar_a2_widget import A2Widget
+from utils.radar_a3_widget import A3Widget
 
 
 # ──────────────────────────────────────────────
-# 단계 인디케이터
+# Studio 통합 위젯 (기존 1~4단계 래핑)
 # ──────────────────────────────────────────────
 
 class StepIndicator(QWidget):
     """상단 진행 단계 표시 바 (1→2→3→4)"""
-
     LABELS = ["프로그램 생성", "대본 기획", "소스 제작", "기획안 조립"]
 
     def __init__(self, total: int = 4, parent=None):
         super().__init__(parent)
-        self._total   = total
+        self._total = total
         self._current = 0
         self.setFixedHeight(44)
         self._labels: list[QLabel] = []
@@ -65,7 +71,6 @@ class StepIndicator(QWidget):
                 arrow.setStyleSheet("color:#444444; font-size:18px;")
                 arrow.setFixedWidth(20)
                 layout.addWidget(arrow)
-
         self._refresh()
 
     def set_current(self, idx: int):
@@ -87,8 +92,117 @@ class StepIndicator(QWidget):
                 lbl.setStyleSheet("color:#555555; font-size:12px;")
 
 
-# 4단계는 steps/step4.py 의 완전 구현체를 사용
-Step4Widget = _Step4Real
+class StudioWidget(QWidget):
+    """기존 VIVID 시스템(1~4단계)을 통째로 담는 위젯"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 단계 인디케이터
+        self.indicator = StepIndicator(total=4)
+        layout.addWidget(self.indicator)
+
+        # 스택 위젯
+        self.stack = QStackedWidget()
+        self.step1 = Step1Widget(self.stack)
+        self.step2 = Step2Widget(self.stack)
+        self.step3 = Step3Widget(self.stack)
+        self.step4 = Step4Widget(self.stack)
+
+        self.stack.addWidget(self.step1)   # index 0
+        self.stack.addWidget(self.step2)   # index 1
+        self.stack.addWidget(self.step3)   # index 2
+        self.stack.addWidget(self.step4)   # index 3
+
+        self.stack.currentChanged.connect(self.indicator.set_current)
+        layout.addWidget(self.stack)
+
+    def reset_to_first_step(self):
+        """항상 1단계부터 시작하도록 리셋"""
+        self.stack.setCurrentIndex(0)
+
+
+# ──────────────────────────────────────────────
+# 사이드바 네비게이션
+# ──────────────────────────────────────────────
+
+class SidebarButton(QPushButton):
+    def __init__(self, text, icon_text, parent=None):
+        super().__init__(f"{icon_text}  {text}", parent)
+        self.setCheckable(True)
+        self.setFixedHeight(50)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: #BBBBBB;
+                border: none;
+                border-left: 4px solid transparent;
+                text-align: left;
+                padding-left: 20px;
+                font-size: 14px;
+                font-weight: 500;
+            }}
+            QPushButton:hover {{
+                background-color: #222222;
+                color: {C_HIGHLIGHT};
+            }}
+            QPushButton:checked {{
+                background-color: #2A2A2A;
+                color: {C_HIGHLIGHT};
+                border-left: 4px solid {C_HIGHLIGHT};
+                font-weight: bold;
+            }}
+        """)
+
+class Sidebar(QWidget):
+    menu_changed = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(200)
+        self.setStyleSheet(f"background-color: #121212; border-right: 1px solid {C_BORDER};")
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 20, 0, 20)
+        layout.setSpacing(5)
+
+        # 로고 영역
+        logo_lbl = QLabel("VIVID")
+        logo_lbl.setStyleSheet(f"color: {C_HIGHLIGHT}; font-size: 24px; font-weight: 900; margin: 10px 20px 30px 20px; letter-spacing: 2px;")
+        layout.addWidget(logo_lbl)
+
+        # 메뉴 버튼들
+        self.btn_a1 = SidebarButton("HotChannel", "📡")
+        self.btn_a2 = SidebarButton("HotTopic", "🔥")
+        self.btn_a3 = SidebarButton("FindTitle", "💡")
+        self.btn_studio = SidebarButton("Studio", "🎬")
+
+        self.buttons = [self.btn_a1, self.btn_a2, self.btn_a3, self.btn_studio]
+        for btn in self.buttons:
+            layout.addWidget(btn)
+            btn.clicked.connect(self._on_btn_clicked)
+
+        layout.addStretch()
+
+        # 버전 표시
+        version_lbl = QLabel("v0.8.0-radar")
+        version_lbl.setStyleSheet("color: #444444; font-size: 10px; margin-left: 20px;")
+        layout.addWidget(version_lbl)
+
+        # 기본 선택
+        self.btn_studio.setChecked(True)
+
+    def _on_btn_clicked(self):
+        clicked_btn = self.sender()
+        for i, btn in enumerate(self.buttons):
+            if btn == clicked_btn:
+                btn.setChecked(True)
+                self.menu_changed.emit(i)
+            else:
+                btn.setChecked(False)
 
 
 # ──────────────────────────────────────────────
@@ -96,63 +210,50 @@ Step4Widget = _Step4Real
 # ──────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
-
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Vivid — 유튜브 영상편집 자동화")
-        self.setMinimumSize(860, 600)
-        self.resize(960, 660)
+        self.setMinimumSize(1100, 750)
+        self.resize(1200, 800)
         self._build_ui()
 
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
 
-        root = QVBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # ── 헤더 바 ──
-        header = QWidget()
-        header.setFixedHeight(48)
-        header.setStyleSheet(
-            f"background-color:#0A0A0A; border-bottom:1px solid {C_BORDER};"
-        )
-        h_row = QHBoxLayout(header)
-        h_row.setContentsMargins(24, 0, 24, 0)
+        # ── 사이드바 ──
+        self.sidebar = Sidebar()
+        main_layout.addWidget(self.sidebar)
 
-        logo = QLabel("VIVID")
-        logo.setStyleSheet(
-            f"color:{C_HIGHLIGHT}; font-size:18px;"
-            f"font-weight:900; letter-spacing:4px;"
-        )
-        h_row.addWidget(logo)
-        h_row.addStretch()
+        # ── 메인 콘텐츠 영역 (스택) ──
+        self.main_stack = QStackedWidget()
+        main_layout.addWidget(self.main_stack)
 
-        subtitle = QLabel("YouTube Production Automation")
-        subtitle.setStyleSheet("color:#555555; font-size:11px;")
-        h_row.addWidget(subtitle)
+        # 각 모듈 위젯 생성
+        self.widget_a1 = A1Widget()
+        self.widget_a2 = A2Widget()
+        self.widget_a3 = A3Widget()
+        self.widget_studio = StudioWidget()
 
-        root.addWidget(header)
+        self.main_stack.addWidget(self.widget_a1)     # index 0
+        self.main_stack.addWidget(self.widget_a2)     # index 1
+        self.main_stack.addWidget(self.widget_a3)     # index 2
+        self.main_stack.addWidget(self.widget_studio) # index 3
 
-        # ── 단계 인디케이터 ──
-        self._indicator = StepIndicator(total=4)
-        root.addWidget(self._indicator)
+        # 사이드바 클릭 시 스택 전환
+        self.sidebar.menu_changed.connect(self._on_menu_changed)
 
-        # ── 스택 위젯 ──
-        self._stack = QStackedWidget()
-        self._step1 = Step1Widget(self._stack)
-        self._step2 = Step2Widget(self._stack)
-        self._step3 = Step3Widget(self._stack)
-        self._step4 = Step4Widget(self._stack)
+        # 초기 화면: Studio
+        self.main_stack.setCurrentIndex(3)
 
-        self._stack.addWidget(self._step1)   # index 0
-        self._stack.addWidget(self._step2)   # index 1
-        self._stack.addWidget(self._step3)   # index 2
-        self._stack.addWidget(self._step4)   # index 3
-
-        self._stack.currentChanged.connect(self._indicator.set_current)
-        root.addWidget(self._stack)
+    def _on_menu_changed(self, index):
+        if index == 3: # Studio 진입 시
+            self.widget_studio.reset_to_first_step()
+        self.main_stack.setCurrentIndex(index)
 
 
 # ──────────────────────────────────────────────
@@ -172,11 +273,10 @@ def main():
     win.show()
 
     # ── 환경 자동 진단 (앱 시작 직후 1회 실행) ──
-    # QTimer를 이용해 메인 윈도우가 완전히 렌더링된 후 다이얼로그 표시
     from PySide6.QtCore import QTimer
     def _show_health_check():
         dlg = HealthCheckDialog(parent=win)
-        dlg.exec()   # 모달 — 사용자가 '확인 후 시작' 클릭 시 종료
+        dlg.exec()
 
     QTimer.singleShot(300, _show_health_check)
 

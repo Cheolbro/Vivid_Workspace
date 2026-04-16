@@ -9,10 +9,12 @@ import { useCurrentFrame, useVideoConfig, interpolate, Easing } from "remotion";
 interface CommonProps {
   startFrame: number; // 노출 시작 프레임
   durationFrames: number; // 노출 지속 프레임 수
-  x?: string; // 가로 위치 (CSS, 기본: center)
-  y?: string; // 세로 위치 (CSS, 기본: center)
-  width?: string; // 너비 (기본: 70%)
-  maxHeight?: string; // 최대 높이 (기본: 70%)
+  x?: number; // 가로 위치 (px, 0=center)
+  y?: number; // 세로 위치 (px, 0=center)
+  width?: string | number; // 너비 (기본: 70%)
+  maxHeight?: string | number; // 최대 높이 (기본: 70%)
+  objectFit?: React.CSSProperties["objectFit"];
+  style?: React.CSSProperties;
 }
 
 interface PopupElementProps extends CommonProps {
@@ -25,11 +27,15 @@ export const PopupElement: React.FC<PopupElementProps> = ({
   alt = "",
   startFrame,
   durationFrames,
+  x = 0,
+  y = 0,
   width = "70%",
   maxHeight = "70%",
+  objectFit = "contain",
+  style: extraStyle,
 }) => {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
+  const { fps, width: videoW, height: videoH } = useVideoConfig();
 
   const relativeFrame = frame - startFrame;
 
@@ -49,7 +55,7 @@ export const PopupElement: React.FC<PopupElementProps> = ({
   );
 
   // 팝업 스케일 애니메이션
-  const scale = interpolate(relativeFrame, [0, fadeInFrames], [0.85, 1], {
+  const popScale = interpolate(relativeFrame, [0, fadeInFrames], [0.85, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
     easing: Easing.out(Easing.back(1.5)),
@@ -61,12 +67,17 @@ export const PopupElement: React.FC<PopupElementProps> = ({
     <div
       style={{
         position: "absolute",
-        inset: 0,
+        left: videoW / 2 + x,
+        top: videoH / 2 + y,
+        width: "100%",
+        height: "100%",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
         opacity,
-        transform: `scale(${scale})`,
+        transform: `translate(-50%, -50%) scale(${popScale})`,
+        pointerEvents: "none",
+        ...extraStyle,
       }}
     >
       <img
@@ -75,9 +86,9 @@ export const PopupElement: React.FC<PopupElementProps> = ({
         style={{
           width,
           maxHeight,
-          objectFit: "contain", // remotion_spec.md 필수 규칙
+          objectFit, // remotion_spec.md 기본 contain, 배경 시 cover 가능
           borderRadius: "12px",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+          boxShadow: objectFit === "cover" ? "none" : "0 8px 32px rgba(0,0,0,0.5)",
         }}
       />
     </div>

@@ -57,7 +57,7 @@
 | auto | `MoneyRainFX` | `src/components/fx/MoneyRainFX.tsx` | 황금 동전 효과 | `particleCount`=30 / `color`=#FFD700 / `speed`=5.0 / `size`=24 |
 | auto | `GoldenRayFX` | `src/components/fx/GoldenRayFX.tsx` | 황금빛 빛줄기 파티클 (쌀가마니 위 가치 연출) | `rayCount`=8 / `particleCount`=40 / `color`=#FFD700 / `glowColor`=#FFF0A0 / `spreadWidth`=320 |
 | auto | `OilFillFX` | `src/components/fx/OilFillFX.tsx` | 원유 차오름 + 홀로그램 파티클 — 탱크 내부를 흑갈색 원유가 easeInOut으로 가득 채우며 황금/청록 광채 파티클 부유 | `fillColor`=#1A0F00 / `glowColor`=#FFD700 / `particleCount`=28 / `width`=480 / `height`=320 / `fillSpeed`=0.75 |
-| auto | `OilLeakFX` | `src/components/fx/OilLeakFX.tsx` | 원유 유출 증발 파티클 — 균열 지점(1~4개)에서 검은 원유가 상방 방사·증발. spring 버스트 + 포물선 궤도 + 연기 안개 | `particleCount`=55 / `crackCount`=3 / `color`=#1A0800 / `speed`=5.5 / `spreadAngle`=70 / `size`=8 / `glowColor`=#4A2A00 |
+| auto | OilLeakFX | src/components/fx/OilLeakFX.tsx | 허공의 구멍에서 원유 유출 — 검은 구멍이 생기고 끈적한 원유가 아래로 줄줄 흘러내리는 효과. 중력 가속도 + 점성 늘어남 연출 | `particleCount`=60 / `crackCount`=2 / `color`=#050200 / `speed`=4.0 / `spreadAngle`=15 / `size`=12 / `glowColor`=#1A0A00 |
 
 ---
 

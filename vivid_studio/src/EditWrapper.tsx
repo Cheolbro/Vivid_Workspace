@@ -18,25 +18,7 @@
 
 import { useCallback } from "react";
 import { Rnd } from "react-rnd";
-import type { Effect } from "./types";
-import { withDefaults } from "./types";
-
-// ── props에서 텍스트 / 이미지 URL 추출 ───────────────────────────────────
-function extractText(effect: Effect): string {
-  const p = effect.props ?? {};
-  return String(p.text ?? p.content ?? p.subtitle ?? p.label ?? p.message ?? p.caption ?? "");
-}
-function extractImgSrc(effect: Effect): string {
-  const p = effect.props ?? {};
-  const raw = String(p.src ?? p.image ?? p.imageSrc ?? p.url ?? "");
-  if (!raw) return "";
-  const name = raw.split(/[\\/]/).pop() ?? raw;
-  return `/api/asset/${name}`;
-}
-function extractColor(effect: Effect): string {
-  const p = effect.props ?? {};
-  return String(p.color ?? p.textColor ?? p.fillColor ?? "");
-}
+import { type Effect, VIDEO_W, VIDEO_H, withDefaults } from "./types";
 
 // ── Effect type별 시각 스타일 ──────────────────────────────────────────────
 const TYPE_COLOR: Record<string, string> = {
@@ -84,23 +66,37 @@ export default function EditWrapper({
 }: EditWrapperProps) {
   const eff = withDefaults(effect);
 
-  // video px → display px
-  const dispX = eff.x * scale;
-  const dispY = eff.y * scale;
+  // 1. 렌더링 공식: 박스의 '중심'이 효과의 실제 위치(eff.x, eff.y - 이미 절대좌표)에 오도록 배치
   const dispW = Math.max(eff.width * scale, 20);
   const dispH = Math.max(eff.height * scale, 16);
+  // withDefaults를 거친 eff.x, eff.y는 이미 절대좌표(VIDEO_W/2 + relX)임.
+  const dispX = eff.x * scale - dispW / 2;
+  const dispY = eff.y * scale - dispH / 2;
 
   const border = typeBorder(eff.type);
 
+  // 2. 역산 공식: (new_rnd_x + width * SCALE / 2) / SCALE - (VIDEO_W / 2)
   const handleDragStop = useCallback(
     (_e: unknown, d: { x: number; y: number }) => {
+      const w = eff.width;
+      const h = eff.height;
+      // 중심점 구하기: (rnd_x + rnd_w / 2)
+      const absX = Math.round((d.x + (w * scale) / 2) / scale);
+      const absY = Math.round((d.y + (h * scale) / 2) / scale);
+      // 중앙점(960, 540)을 빼서 relX, relY 도출
+      const relX = absX - VIDEO_W / 2;
+      const relY = absY - VIDEO_H / 2;
+
       onChange({
         ...effect,
-        x: Math.round(d.x / scale),
-        y: Math.round(d.y / scale),
+        x: absX,
+        y: absY,
+        ...(effect.commonProps !== undefined && {
+          commonProps: { ...effect.commonProps, x: relX, y: relY },
+        }),
       });
     },
-    [effect, onChange, scale]
+    [eff.width, eff.height, effect, onChange, scale]
   );
 
   const handleResizeStop = useCallback(
@@ -111,12 +107,23 @@ export default function EditWrapper({
       _delta: unknown,
       pos: { x: number; y: number }
     ) => {
+      const w = Math.round(ref.offsetWidth / scale);
+      const h = Math.round(ref.offsetHeight / scale);
+      // 중심점 구하기: (rnd_x + rnd_w / 2)
+      const absX = Math.round((pos.x + (w * scale) / 2) / scale);
+      const absY = Math.round((pos.y + (h * scale) / 2) / scale);
+      const relX = absX - VIDEO_W / 2;
+      const relY = absY - VIDEO_H / 2;
+
       onChange({
         ...effect,
-        x: Math.round(pos.x / scale),
-        y: Math.round(pos.y / scale),
-        width: Math.round(ref.offsetWidth / scale),
-        height: Math.round(ref.offsetHeight / scale),
+        x: absX,
+        y: absY,
+        width: w,
+        height: h,
+        ...(effect.commonProps !== undefined && {
+          commonProps: { ...effect.commonProps, x: relX, y: relY, width: w, height: h },
+        }),
       });
     },
     [effect, onChange, scale]
@@ -138,95 +145,32 @@ export default function EditWrapper({
           position: "relative",
           width: "100%",
           height: "100%",
-          background: typeColor(eff.type),
-          border: `${selected ? 2 : 1}px solid ${border}`,
+          background: "transparent",
+          border: selected ? `2px solid ${border}` : "1px solid rgba(255,255,255,0.18)",
           borderRadius: 3,
           boxSizing: "border-box",
-          display: "flex",
-          flexDirection: "column",
-          justifyContent: "center",
-          alignItems: "center",
-          overflow: "hidden",
           cursor: "move",
           userSelect: "none",
-          outline: selected ? `2px solid ${border}` : "none",
-          outlineOffset: 1,
+          outline: selected ? `1px solid ${border}` : "none",
+          outlineOffset: 2,
         }}
       >
-        {/* Popup 이미지 썸네일 */}
-        {eff.type === "Popup" && extractImgSrc(effect) && (
-          <img
-            src={extractImgSrc(effect)}
-            draggable={false}
+        {/* 타입 배지 — 선택 시에만 표시 */}
+        {selected && (
+          <div
             style={{
               position: "absolute",
-              inset: 0,
-              width: "100%",
-              height: "100%",
-              objectFit: "cover",
-              opacity: 0.55,
-              pointerEvents: "none",
-            }}
-            alt=""
-          />
-        )}
-
-        {/* 타입 배지 (좌상단 고정) */}
-        <div
-          style={{
-            position: "absolute",
-            top: 2,
-            left: 3,
-            fontSize: Math.max(7, dispH * 0.13),
-            fontWeight: 700,
-            color: border,
-            background: "rgba(0,0,0,0.55)",
-            borderRadius: 2,
-            padding: "0 3px",
-            lineHeight: 1.5,
-            pointerEvents: "none",
-            maxWidth: "90%",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {eff.type}
-        </div>
-
-        {/* 텍스트 컨텐츠 (text/content/subtitle 등 props) */}
-        {extractText(effect) ? (
-          <div
-            style={{
-              position: "relative",
-              zIndex: 1,
-              fontSize: Math.max(9, Math.min(dispH * 0.22, 18)),
-              fontWeight: 600,
-              color: extractColor(effect) || "#ffffff",
-              textAlign: "center",
-              lineHeight: 1.35,
-              padding: "0 6px",
-              maxWidth: "100%",
-              maxHeight: "70%",
-              overflow: "hidden",
-              display: "-webkit-box",
-              WebkitLineClamp: 3,
-              WebkitBoxOrient: "vertical",
-              textShadow: "0 1px 3px rgba(0,0,0,0.8)",
-              wordBreak: "break-word",
-            }}
-          >
-            {extractText(effect)}
-          </div>
-        ) : (
-          /* 텍스트 없는 경우 — 타입명만 크게 */
-          <div
-            style={{
-              fontSize: Math.max(9, dispH * 0.2),
+              top: -18,
+              left: 0,
+              fontSize: 9,
               fontWeight: 700,
-              color: border,
-              opacity: 0.7,
+              color: "#fff",
+              background: border,
+              borderRadius: "2px 2px 0 0",
+              padding: "1px 5px",
+              lineHeight: 1.6,
               pointerEvents: "none",
+              whiteSpace: "nowrap",
             }}
           >
             {eff.type}
@@ -244,7 +188,7 @@ export default function EditWrapper({
               height: 8,
               background: border,
               borderRadius: 1,
-              opacity: 0.8,
+              opacity: 0.9,
             }}
           />
         )}

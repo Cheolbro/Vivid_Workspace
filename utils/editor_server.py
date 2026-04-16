@@ -19,11 +19,15 @@ from __future__ import annotations
 
 import json
 import re
-import time
+import sys
 from pathlib import Path
 from typing import Any
 
+import shutil
+
 from fastapi import FastAPI, HTTPException, Request
+from utils.backend_ext import generate_compositions
+from utils.theme import SHARED_FX_DIR
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -209,6 +213,21 @@ async def post_plan(request: Request):
     # ── 4. touch → 핫리로드 ───────────────────────────────────────────────
     _touch(plan_p)
 
+    # ── 5. TSX 재생성 → Remotion 핫리로드에 편집 내용 즉시 반영 ─────────────
+    if _project_dir is not None:
+        remotion_dir  = _project_dir / "remotion"
+        timeline_path = _project_dir / "asset" / "base_timeline.json"
+        if remotion_dir.exists():
+            try:
+                generate_compositions(
+                    flat_body,
+                    remotion_dir,
+                    timeline_path=timeline_path if timeline_path.exists() else None,
+                )
+            except Exception as e:
+                # TSX 재생성 실패는 경고만 — JSON 저장 성공으로 응답은 유지
+                print(f"[WARN] editor_server: TSX 재생성 실패: {e}")
+
     return {"ok": True, "backup": backup_p.name}
 
 
@@ -283,77 +302,311 @@ def get_fx_catalog():
     return JSONResponse(content=items)
 
 
+# ── FX 코드 미리보기 / 되돌리기 / 반영 확정 ────────────────────────────────────
+#
+# 흐름:
+#   1. POST /api/fx/preview  → 코드 저장 + 기존 파일 .bak 백업 (Remotion 핫리로드)
+#   2. POST /api/fx/revert   → .bak 복원 (되돌리기)
+#   3. POST /api/fx/commit   → .bak 삭제 (반영 확정 — 이후 모든 프로젝트에 영구 적용)
+
+def _safe_fx_name(raw: str) -> str:
+    """경로 순회 방지: 파일명만 추출하고 .tsx 확장자 강제"""
+    name = Path(raw).name
+    if not name.endswith(".tsx"):
+        name += ".tsx"
+    return name
+
+
+@app.post("/api/fx/preview")
+async def fx_preview(request: Request):
+    """
+    TSX 코드를 임시 적용.
+    기존 파일은 .bak으로 백업(원본 보호), 새 코드로 덮어씌움.
+    Remotion dev-server가 파일 변경을 감지해 핫리로드.
+    """
+    body = await request.json()
+    filename = _safe_fx_name(body.get("filename", ""))
+    code: str = body.get("code", "")
+    if not filename or not code.strip():
+        raise HTTPException(status_code=400, detail="filename과 code가 필요합니다.")
+
+    SHARED_FX_DIR.mkdir(parents=True, exist_ok=True)
+    fx_path  = SHARED_FX_DIR / filename
+    bak_path = SHARED_FX_DIR / (filename + ".bak")
+
+    # 원본 백업 (이미 .bak 있으면 덮어쓰지 않음 — 원본 보호)
+    if fx_path.exists() and not bak_path.exists():
+        shutil.copy2(fx_path, bak_path)
+
+    fx_path.write_text(code, encoding="utf-8")
+
+    # Windows chokidar는 junction 타겟 직접 쓰기를 감지 못함.
+    # junction 경로(remotion/src/components/fx/)를 통해 실제 write해야 watcher 트리거됨.
+    if _project_dir is not None:
+        junction_fx = _project_dir / "remotion" / "src" / "components" / "fx" / filename
+        if junction_fx.parent.exists():
+            junction_fx.write_text(code, encoding="utf-8")
+
+    return {"ok": True, "filename": filename, "has_backup": bak_path.exists()}
+
+
+@app.post("/api/fx/revert")
+async def fx_revert(request: Request):
+    """
+    미리보기 취소 — .bak 파일로 원복.
+    .bak이 없으면 원본이 없다는 뜻(신규 파일)이므로 .tsx 자체를 삭제.
+    """
+    body = await request.json()
+    filename = _safe_fx_name(body.get("filename", ""))
+    if not filename:
+        raise HTTPException(status_code=400, detail="filename이 필요합니다.")
+
+    fx_path  = SHARED_FX_DIR / filename
+    bak_path = SHARED_FX_DIR / (filename + ".bak")
+
+    if bak_path.exists():
+        shutil.copy2(bak_path, fx_path)
+        bak_path.unlink()
+    elif fx_path.exists():
+        fx_path.unlink()  # 신규 파일이었으므로 제거
+
+    return {"ok": True, "filename": filename}
+
+
+@app.post("/api/fx/commit")
+async def fx_commit(request: Request):
+    """
+    미리보기 확정 — .bak 파일 삭제.
+    현재 .tsx가 영구 적용됨. shared_fx를 심볼릭 링크로 공유하는
+    모든 프로젝트에서 이후 동일 FX 이름 사용 시 새 연출로 표시됨.
+    """
+    body = await request.json()
+    filename = _safe_fx_name(body.get("filename", ""))
+    if not filename:
+        raise HTTPException(status_code=400, detail="filename이 필요합니다.")
+
+    bak_path = SHARED_FX_DIR / (filename + ".bak")
+    if bak_path.exists():
+        bak_path.unlink()
+
+    return {"ok": True, "filename": filename}
+
+
 # ── AI 채팅 엔드포인트 ───────────────────────────────────────────────────────
 
-_CHAT_SYSTEM = """\
-당신은 VIVID Studio AI 어시스턴트입니다.
-사용자의 remotion_plan.json을 분석하고 편집 요청에 응답합니다.
+_WORKSPACE_ROOT = Path(__file__).parent.parent  # c:\Youtube\Vivid_Workspace
 
-## 응답 규칙
-반드시 아래 세 가지 형식 중 하나의 JSON만 반환하세요 (마크다운 없이 순수 JSON):
+# ── 시각 효과 구현 전략 가이드 (FX 프롬프트 공통 첨부) ──────────────────────
+_FX_IMPL_GUIDE = """\
+## 시각 효과 구현 전략 가이드
+사용자의 묘사를 보고 아래 기준에 따라 구현 기법을 선택하세요.
+단순한 원형 div 파티클 방식은 유체/물줄기/균열 묘사에 절대 사용하지 마세요.
 
-1. plan 수정 요청인 경우:
-{"type":"plan_update","plan":{...전체 수정된 plan...},"summary":"변경 내용 한 줄 요약"}
+| 묘사 키워드 | 금지 | 권장 구현 기법 |
+|---|---|---|
+| 물, 물줄기, 흘러가는, 흐르는, 흐름, 흘러나옴, 液體 | 원형 div 나열 | SVG `<path>` + cubic bezier + **아래 필수 기법 2가지 적용** |
+| 고임, 웅덩이, puddle | 개별 파티클 | 바닥 타원이 interpolate로 점점 퍼지는 CSS ellipse |
+| 뚝뚝 떨어짐, 낙하 물방울 | 균일한 원 | 세로로 긴 물방울(border-radius 비대칭) + 포물선 궤도 |
+| 균열, 틈새, 갈라짐 | 사각 div | SVG `<line>` 또는 clip-path 다각형 |
+| 구멍, 공허, 블랙홀 | 단색 원 | radial-gradient(black→transparent) + box-shadow inset |
+| 연기, 안개, 증기 | 선명한 원 | blur(px) 큰 타원, opacity interpolate |
+| 빛줄기, 광선, 글로우 | 단색 div | radial-gradient + filter:blur + 방사형 배치 |
+| 충격파, 파문, 링 | 채워진 원 | border만 있는 원 + scale spring 확장 |
+| 파티클, 폭발, 방사 | (파티클은 허용) | 방향 벡터 + 중력 가속도 + size/opacity 곡선 |
 
-2. 새 FX TSX 코드 요청인 경우:
-{"type":"tsx_code","filename":"XxxFX.tsx","code":"// TSX 코드...","summary":"FX 설명"}
+### 물/흐름 계열 필수 기법 (사용자 요청에 "물", "물줄기", "흘러가는", "흐르는", "흐름" 중 하나라도 포함된 경우 반드시 적용)
 
-3. 일반 질문/설명인 경우:
-{"type":"text","content":"답변 내용"}
+**기법 1 — strokeDashoffset 흐름 애니메이션**
+SVG path에 `strokeDasharray`와 `strokeDashoffset`을 사용해 줄기가 구멍에서 끝점으로 흘러가는 것처럼 보이게 한다.
+```tsx
+const totalLength = 400; // path 총 길이 (어림값)
+const flowOffset = interpolate(rel, [0, durationFrames], [totalLength, -totalLength]);
+// <path strokeDasharray={totalLength} strokeDashoffset={flowOffset} ... />
+```
 
-## 판단 기준
-- "바꿔", "수정", "변경", "이동", "설정" → plan_update
-- "만들어", "작성", "추가 FX", "코드" → tsx_code
-- "뭐야", "어떻게", "설명" → text
+**기법 2 — 가장자리 sin파 흔들림**
+줄기 폭(strokeWidth)이 시간에 따라 미세하게 진동해 점성 액체처럼 보이게 한다.
+```tsx
+const wobble = Math.sin(rel * 0.15) * 2; // ±2px 진동
+// strokeWidth={baseWidth + wobble}
+```
 """
 
-_CATALOG_TRUNCATE = 2000  # fx_catalog 컨텍스트 최대 문자 수
-_PLAN_TRUNCATE    = 6000  # plan 컨텍스트 최대 문자 수
+# 의도별 시스템 프롬프트
+_SYSTEM_FX_MODIFY = """\
+당신은 Remotion TSX FX 컴포넌트 개발자입니다.
+
+아래 순서대로 작업하세요:
+1. shared_assets/shared_fx/ 폴더에서 해당 .tsx 파일을 읽고 사용자의 요청에 맞게 수정하세요.
+2. fx_catalog.txt 파일을 열어 해당 FX 항목의 specificProps 기본값을 확인하세요.
+   수정된 연출에 맞게 기본값 변경이 필요하면 fx_catalog.txt 도 함께 수정하세요.
+
+{guide}
+
+[출력 규칙] 작업 완료 후 설명 문장 없이 아래 JSON 한 개만 출력하세요:
+{{"type":"tsx_code","filename":"XxxFX.tsx","code":"// 완전한 수정된 TSX 코드","summary":"변경 내용 한 줄 요약"}}
+""".format(guide=_FX_IMPL_GUIDE)
+
+_SYSTEM_FX_CREATE = """\
+당신은 Remotion TSX FX 컴포넌트 개발자입니다.
+
+아래 순서대로 작업하세요:
+1. fx_catalog.txt 파일을 읽어 기존 FX 목록을 확인하고, 중복되지 않는 컴포넌트 이름을 정하세요.
+2. shared_assets/shared_fx/ 폴더에서 기존 .tsx 파일 하나를 읽어 코딩 스타일과 파일 구조를 파악하세요.
+3. 동일한 스타일로 새 FX 컴포넌트를 작성하세요.
+   완성된 파일은 shared_assets/shared_fx/ 에 저장되며, 실제 저장은 시스템이 처리합니다.
+
+{guide}
+
+[출력 규칙] 작업 완료 후 설명 문장 없이 아래 JSON 한 개만 출력하세요:
+{{"type":"tsx_code","filename":"XxxFX.tsx","code":"// 완전한 TSX 코드","summary":"FX 설명"}}
+""".format(guide=_FX_IMPL_GUIDE)
+
+_SYSTEM_GENERAL = """\
+당신은 VIVID Studio AI 어시스턴트입니다.
+
+[출력 규칙] 설명 문장 없이 아래 JSON 한 개만 출력하세요:
+{"type":"text","content":"답변 내용"}
+"""
+
+_FX_MODIFY_KEYWORDS  = ["변경", "수정", "바꿔", "고쳐", "바꿔줘", "연출", "교체"]
+_FX_CREATE_KEYWORDS  = ["만들어", "새로", "추가", "생성", "새 fx", "새fx", "신규"]
 
 
-def _get_gemini_client():
-    """OAuth 우선, 실패 시 config.json API key 시도"""
-    # 1. OAuth (client_secret.json)
-    root = Path(__file__).parent.parent
-    secret = root / "client_secret.json"
-    token  = root / "token.json"
-    if secret.exists():
-        try:
-            from utils.google_auth import get_genai_client  # type: ignore
-            return get_genai_client(
-                client_secret_path=str(secret),
-                token_path=str(token),
-            )
-        except Exception:
-            pass  # OAuth 실패 시 API key로 폴백
+def _detect_intent(message: str) -> str:
+    """키워드 기반 요청 의도 분류 → fx_modify / fx_create / general"""
+    has_fx_name    = bool(re.search(r"\w+fx\b", message, re.IGNORECASE))
+    has_fx_keyword = "fx" in message.lower() or "효과" in message
 
-    # 2. API key (config.json)
-    cfg_path = root / "config.json"
-    if cfg_path.exists():
-        try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-            api_key = cfg.get("gemini_api_key", "")
-            if api_key:
-                from google import genai  # type: ignore
-                return genai.Client(api_key=api_key)
-        except Exception:
-            pass
+    if has_fx_name and any(k in message for k in _FX_MODIFY_KEYWORDS):
+        return "fx_modify"
+    if any(k in message for k in _FX_CREATE_KEYWORDS) and has_fx_keyword:
+        return "fx_create"
+    return "general"
+
+
+import subprocess
+import shutil
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mGKHF]")
+
+# node.exe + gemini entry.js 경로 캐시 (프로세스당 1회 탐색)
+_gemini_node_cmd_cache: list[str] | None = None
+
+
+def _find_gemini_exe() -> str:
+    """
+    gemini CLI 실행파일 경로를 반환한다.
+    shutil.which 실패 시 Windows npm 글로벌 경로를 직접 탐색.
+    """
+    found = shutil.which("gemini") or shutil.which("gemini.cmd")
+    if found:
+        return found
+
+    import os
+    appdata = os.environ.get("APPDATA", "")
+    if appdata:
+        candidate = Path(appdata) / "npm" / "gemini.cmd"
+        if candidate.exists():
+            return str(candidate)
 
     raise RuntimeError(
-        "Gemini 인증 정보 없음. "
-        "client_secret.json (OAuth) 또는 config.json의 gemini_api_key를 확인하세요."
+        "'gemini' CLI를 찾을 수 없습니다.\n"
+        "터미널에서 npm install -g @google/gemini-cli 를 실행한 뒤\n"
+        "Vivid Studio 서버를 재시작하세요."
     )
+
+
+def _find_node_gemini_cmd() -> list[str]:
+    """
+    [node.exe경로, entry.js경로] 를 3계층 탐색으로 반환 (결과 캐싱).
+
+    Layer 1 — require.resolve (가장 정확, Node.js 모듈 탐색 알고리즘 직접 활용)
+    Layer 2 — cmd_path.parent/node_modules (글로벌 npm 표준 구조)
+    Layer 3 — cmd_path.parent.parent (로컬 node_modules/.bin 구조 대응)
+    """
+    global _gemini_node_cmd_cache
+    if _gemini_node_cmd_cache is not None:
+        return _gemini_node_cmd_cache
+
+    node = shutil.which("node.exe") or shutil.which("node")
+    if not node:
+        raise RuntimeError("node.exe를 찾을 수 없습니다. Node.js 설치를 확인하세요.")
+
+    _BUNDLE = ("node_modules", "@google", "gemini-cli", "bundle", "gemini.js")
+
+    # ── Layer 1: require.resolve로 Node.js에게 직접 질의 ──────────────────
+    try:
+        resolve_script = (
+            "const r=require.resolve('@google/gemini-cli');"
+            "const p=require('path');"
+            "console.log(p.join(p.dirname(r),'../bundle/gemini.js'))"
+        )
+        res = subprocess.run(
+            [node, "-e", resolve_script],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=15,
+        )
+        if res.returncode == 0:
+            js_path = Path(res.stdout.strip())
+            if js_path.exists():
+                _gemini_node_cmd_cache = [node, str(js_path)]
+                return _gemini_node_cmd_cache
+    except Exception:
+        pass
+
+    # ── Layer 2 / 3: cmd_path 기준 직접 경로 구성 ─────────────────────────
+    cmd_path = Path(_find_gemini_exe())
+    for base in (cmd_path.parent, cmd_path.parent.parent):
+        js_path = base.joinpath(*_BUNDLE)
+        if js_path.exists():
+            _gemini_node_cmd_cache = [node, str(js_path)]
+            return _gemini_node_cmd_cache
+
+    raise RuntimeError(
+        "gemini entry.js를 찾을 수 없습니다.\n"
+        f"탐색 기준 경로: {cmd_path.parent}\n"
+        "npm install -g @google/gemini-cli 재설치 후 서버를 재시작하세요."
+    )
+
+
+def _call_gemini_cli(prompt: str, cwd: str | None = None) -> str:
+    """
+    시스템에 설치된 'gemini' CLI를 호출하여 응답을 받는다.
+    Windows: node.exe + entry.js 직접 호출로 cmd.exe 8191자 제한 우회.
+    cwd: Gemini가 파일을 탐색할 작업 디렉토리 (기본: 임시 폴더)
+    """
+    import tempfile as _tmp
+
+    if sys.platform == "win32":
+        # gemini.cmd 래퍼 없이 node.exe를 직접 실행 → cmd.exe 인수 길이 제한 없음
+        cmd = _find_node_gemini_cmd() + ["-p", prompt]
+    else:
+        cmd = [_find_gemini_exe(), "-p", prompt]
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        cwd=cwd if cwd else _tmp.gettempdir(),
+        timeout=600,
+    )
+
+    if result.returncode != 0:
+        err = result.stderr
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", errors="replace")
+        raise RuntimeError(f"gemini CLI 호출 실패: {err[:300]}")
+
+    out = result.stdout
+    if isinstance(out, bytes):
+        out = out.decode("utf-8", errors="replace")
+    return _ANSI_RE.sub("", out).strip()
 
 
 @app.post("/api/chat")
 async def api_chat(request: Request):
     """
-    AI 채팅 엔드포인트
-    입력: { message: str, plan?: dict }
-    출력:
-      { type: "plan_update", plan: {...}, summary: str }
-      { type: "tsx_code",    filename: str, code: str, summary: str }
-      { type: "text",        content: str }
+    AI 채팅 엔드포인트 (gemini CLI 기반)
     """
     # ── 입력 파싱 ────────────────────────────────────────────────────────────
     try:
@@ -361,61 +614,65 @@ async def api_chat(request: Request):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"JSON 파싱 실패: {e}")
 
-    message  = str(body.get("message", "")).strip()
-    plan_raw = body.get("plan")
+    message = str(body.get("message", "")).strip()
+    history = body.get("history", [])  # [{role, text}, ...]
 
     if not message:
-        raise HTTPException(status_code=400, detail="message 필드가 비어 있습니다.")
+        raise HTTPException(status_code=400, detail="message field is empty.")
 
-    # ── 컨텍스트 구성 ────────────────────────────────────────────────────────
-    plan_ctx = (
-        json.dumps(plan_raw, ensure_ascii=False, indent=2)[:_PLAN_TRUNCATE]
-        if plan_raw else "없음"
-    )
+    # ── 대화 이력 포맷팅 ─────────────────────────────────────────────────────
+    history_ctx = ""
+    if history:
+        history_lines = []
+        for h in history:
+            role = "AI" if h.get("role") == "assistant" else "User"
+            history_lines.append(f"{role}: {h.get('text', '')}")
+        history_ctx = "## 이전 대화 맥락\n" + "\n".join(history_lines) + "\n\n"
 
-    catalog_ctx = ""
-    catalog_path = Path(__file__).parent.parent / "fx_catalog.txt"
-    if catalog_path.exists():
-        catalog_ctx = catalog_path.read_text(encoding="utf-8")[:_CATALOG_TRUNCATE]
+    # ── 의도 분류 → 시스템 프롬프트 선택 ────────────────────────────────────
+    intent = _detect_intent(message)
+    if intent == "fx_modify":
+        system = _SYSTEM_FX_MODIFY
+    elif intent == "fx_create":
+        system = _SYSTEM_FX_CREATE
+    else:
+        system = _SYSTEM_GENERAL
 
     prompt = (
-        f"{_CHAT_SYSTEM}\n\n"
-        f"## 현재 remotion_plan.json\n{plan_ctx}\n\n"
-        + (f"## 등록된 FX 카탈로그\n{catalog_ctx}\n\n" if catalog_ctx else "")
-        + f"## 사용자 요청\n{message}"
+        f"{system}\n\n"
+        f"{history_ctx}"
+        f"## 사용자 요청\n{message}\n\n"
+        "반드시 JSON 형식으로만 답변해줘."
     )
 
-    # ── Gemini 호출 ───────────────────────────────────────────────────────────
+    # ── Gemini (CLI) 호출 — workspace root를 cwd로 설정 ──────────────────────
     try:
-        client = _get_gemini_client()
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
+        import asyncio
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(
+            None,
+            lambda: _call_gemini_cli(prompt, cwd=str(_WORKSPACE_ROOT)),
         )
-        raw = response.text.strip()
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Gemini 호출 실패: {e}")
+        raise HTTPException(status_code=502, detail=f"Gemini(CLI) 호출 실패: {e}")
 
     # ── 응답 파싱 (JSON 추출) ─────────────────────────────────────────────────
-    # 마크다운 코드블록 제거 시도
+    # 1단계: 마크다운 코드블록 안의 JSON 우선 추출
     json_block = re.search(r"```(?:json)?\s*(.*?)\s*```", raw, re.DOTALL)
     if json_block:
         raw = json_block.group(1).strip()
 
-    try:
-        result = json.loads(raw)
-        # plan_update 검증: plan 필드가 dict여야 함
-        if result.get("type") == "plan_update":
-            if not isinstance(result.get("plan"), dict):
-                result = {"type": "text", "content": raw}
-        return JSONResponse(content=result)
-    except json.JSONDecodeError:
-        # JSON 파싱 실패 → 텍스트 응답으로 폴백
-        return JSONResponse(content={"type": "text", "content": raw})
+    # 2단계: raw_decode — 앞뒤 자연어 텍스트 있어도 JSON 추출 가능
+    first_brace = raw.find("{")
+    if first_brace >= 0:
+        try:
+            result, _ = json.JSONDecoder().raw_decode(raw[first_brace:])
+            return JSONResponse(content=result)
+        except json.JSONDecodeError:
+            pass
+
+    # 3단계: 완전 실패 → 텍스트 응답으로 폴백
+    return JSONResponse(content={"type": "text", "content": raw})
 
 
 # ── 정적 파일 마운트 (React 빌드 or 플레이스홀더) ───────────────────────────

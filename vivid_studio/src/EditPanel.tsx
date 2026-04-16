@@ -12,7 +12,7 @@
 
 import { useState } from "react";
 import type { Effect, RemotionPlan, Slide } from "./types";
-import { isColorProp, isFileProp, withDefaults } from "./types";
+import { isColorProp, isFileProp, VIDEO_H, VIDEO_W, withDefaults } from "./types";
 import ColorPicker from "./ColorPicker";
 
 // ── Props ──────────────────────────────────────────────────────────────────
@@ -84,14 +84,52 @@ function EffectEditor({
   onChange: (updated: Effect) => void;
 }) {
   const eff = withDefaults(effect);
-  const [propsOpen, setPropsOpen] = useState(true);
+  const [specificOpen, setSpecificOpen] = useState(true);
+  const [legacyOpen, setLegacyOpen] = useState(true);
 
-  const set = (key: keyof Effect, val: unknown) => onChange({ ...effect, [key]: val });
+  const set = (key: keyof Effect, val: unknown) => {
+    let updated = { ...effect, [key]: val };
 
+    // 레이아웃 좌표/크기 변경 시 commonProps와 동기화 (센터 기준 변환 포함)
+    if (["x", "y", "width", "height"].includes(key as string)) {
+      const w = key === "width" ? (val as number) : (withDefaults(effect).width as number);
+      const h = key === "height" ? (val as number) : (withDefaults(effect).height as number);
+      const absX = key === "x" ? (val as number) : (withDefaults(effect).x as number);
+      const absY = key === "y" ? (val as number) : (withDefaults(effect).y as number);
+
+      if (effect.commonProps) {
+        updated.commonProps = {
+          ...effect.commonProps,
+          width: w,
+          height: h,
+          x: absX - VIDEO_W / 2,
+          y: absY - VIDEO_H / 2,
+        };
+      }
+    }
+    onChange(updated);
+  };
+
+  // specificProps 업데이트 (색상, FX별 고유 속성)
+  const setSpecificProp = (key: string, val: unknown) =>
+    onChange({ ...effect, specificProps: { ...(effect.specificProps ?? {}), [key]: val } });
+
+  // commonProps 업데이트 (fontSize 등 공통 속성; x/y는 레이아웃 섹션에서 직접 처리)
+  const setCommonProp = (key: string, val: unknown) =>
+    onChange({ ...effect, commonProps: { ...(effect.commonProps ?? {}), [key]: val } });
+
+  // 레거시 props 업데이트 (하위 호환)
   const setProp = (key: string, val: unknown) =>
     onChange({ ...effect, props: { ...(effect.props ?? {}), [key]: val } });
 
-  const propKeys = Object.keys(effect.props ?? {});
+  // specificProps 키 목록 (색상 피커 등 동적 UI 대상)
+  const specificKeys = Object.keys(effect.specificProps ?? {});
+  // commonProps 중 x/y/width/height/zIndex를 제외한 나머지 (fontSize 등)
+  const commonExtraKeys = Object.keys(effect.commonProps ?? {}).filter(
+    (k) => !["x", "y", "width", "height"].includes(k)
+  );
+  // 레거시 props 키
+  const legacyPropKeys = Object.keys(effect.props ?? {});
 
   return (
     <div style={s.effectEditor}>
@@ -162,20 +200,97 @@ function EffectEditor({
         </div>
       </div>
 
-      {/* 사용자 Props (동적 UI) */}
-      {propKeys.length > 0 && (
+      {/* text / src 최상위 필드 */}
+      {(effect.text !== undefined || effect.src !== undefined) && (
+        <div style={s.group}>
+          <div style={s.groupTitle}>콘텐츠</div>
+          {effect.text !== undefined && (
+            <Field label="text" value={effect.text} onChange={(v) => set("text", v)} />
+          )}
+          {effect.src !== undefined && (
+            <div style={s.field}>
+              <label style={s.fieldLabel}>src</label>
+              <input
+                style={{ ...s.input, fontFamily: "monospace", fontSize: 10 }}
+                type="text"
+                value={effect.src}
+                placeholder="파일명 또는 경로"
+                onChange={(e) => set("src", e.target.value)}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* specificProps — 색상 피커 포함 FX별 고유 속성 */}
+      {specificKeys.length > 0 && (
         <div style={s.group}>
           <div
             style={{ ...s.groupTitle, cursor: "pointer", userSelect: "none" }}
-            onClick={() => setPropsOpen((v) => !v)}
+            onClick={() => setSpecificOpen((v) => !v)}
           >
-            {propsOpen ? "▾" : "▸"} Props ({propKeys.length})
+            {specificOpen ? "▾" : "▸"} FX Props ({specificKeys.length})
           </div>
+          {specificOpen &&
+            specificKeys.map((k) => {
+              const val = effect.specificProps![k];
+              if (isColorProp(k)) {
+                return (
+                  <div key={k} style={{ position: "relative" }}>
+                    <ColorPicker
+                      label={k}
+                      value={typeof val === "string" ? val : "#888888"}
+                      onChange={(hex) => setSpecificProp(k, hex)}
+                    />
+                  </div>
+                );
+              }
+              const isNum = typeof val === "number";
+              return (
+                <Field
+                  key={k}
+                  label={k}
+                  type={isNum ? "number" : "text"}
+                  value={String(val ?? "")}
+                  onChange={(v) => setSpecificProp(k, isNum ? +v : v)}
+                />
+              );
+            })}
+        </div>
+      )}
 
-          {propsOpen &&
-            propKeys.map((k) => {
+      {/* commonProps 추가 속성 (fontSize 등 x/y/width/height 제외) */}
+      {commonExtraKeys.length > 0 && (
+        <div style={s.group}>
+          <div style={s.groupTitle}>공통 속성</div>
+          {commonExtraKeys.map((k) => {
+            const val = effect.commonProps![k];
+            const isNum = typeof val === "number";
+            return (
+              <Field
+                key={k}
+                label={k}
+                type={isNum ? "number" : "text"}
+                value={String(val ?? "")}
+                onChange={(v) => setCommonProp(k, isNum ? +v : v)}
+              />
+            );
+          })}
+        </div>
+      )}
+
+      {/* 레거시 props (하위 호환) */}
+      {legacyPropKeys.length > 0 && (
+        <div style={s.group}>
+          <div
+            style={{ ...s.groupTitle, cursor: "pointer", userSelect: "none" }}
+            onClick={() => setLegacyOpen((v) => !v)}
+          >
+            {legacyOpen ? "▾" : "▸"} Props (legacy, {legacyPropKeys.length})
+          </div>
+          {legacyOpen &&
+            legacyPropKeys.map((k) => {
               const val = effect.props![k];
-
               if (isColorProp(k)) {
                 return (
                   <div key={k} style={{ position: "relative" }}>
@@ -187,7 +302,6 @@ function EffectEditor({
                   </div>
                 );
               }
-
               if (isFileProp(k)) {
                 return (
                   <div key={k} style={s.field}>
@@ -202,8 +316,6 @@ function EffectEditor({
                   </div>
                 );
               }
-
-              // 숫자 또는 텍스트
               const isNum = typeof val === "number";
               return (
                 <Field

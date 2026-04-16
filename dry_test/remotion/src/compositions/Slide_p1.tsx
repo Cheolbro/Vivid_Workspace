@@ -1,10 +1,10 @@
 import React from "react";
 import { Img, staticFile } from "remotion";
+import { GlowTextFX } from "../components/fx/GlowTextFX";
+import { GoldenRayFX } from "../components/fx/GoldenRayFX";
 import { SubtitleOverlay } from "../components/SubtitleOverlay";
 import { PopupElement } from "../components/PopupElement";
-import { GoldenRayFX } from "../components/fx/GoldenRayFX";
 import { HighlighterFX } from "../components/fx/HighlighterFX";
-import { GlowTextFX } from "../components/fx/GlowTextFX";
 
 interface Props {
   previewMode?: boolean;
@@ -33,31 +33,57 @@ export const Slide_p1: React.FC<Props> = ({ previewMode = false }) => (
       width="100%"
       maxHeight="70%"
     />
-    <HighlighterFX
-      startFrame={0}
-      durationFrames={954}
-      x={-350}
-      y={-200}
-      fontSize={"80px"}
-      highlightColor={"#FFE500"}
-      textColor={"#1A1A1A"}
-      text={"남의 쌀가마니 대신 보관"}
-    />
-    <GlowTextFX
-      startFrame={485}
-      durationFrames={469}
-      x={-350}
-      y={0}
-      fontSize={"100px"}
-      color={"#FFD700"}
-      glowColor={"#FFD700"}
-      text={"'우선 구매권'"}
-    />
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        transform: "scale(1.1250)",
+        transformOrigin: "526.0px 198.0px",
+        zIndex: 0,
+        pointerEvents: "none",
+      }}
+    >
+      <HighlighterFX
+        startFrame={0}
+        durationFrames={954}
+        x={-434}
+        y={-342}
+        fontSize={"80px"}
+        width={450}
+        height={265}
+        highlightColor={"#FFE500"}
+        textColor={"#1A1A1A"}
+        text={"남의 쌀가마니 대신 보관"}
+      />
+    </div>
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        transform: "scale(1.9000)",
+        transformOrigin: "535.0px 460.0px",
+        zIndex: 0,
+        pointerEvents: "none",
+      }}
+    >
+      <GlowTextFX
+        startFrame={485}
+        durationFrames={469}
+        x={-425}
+        y={-80}
+        fontSize={"100px"}
+        width={760}
+        height={523}
+        color={"#6100ff"}
+        glowColor={"#ffffff"}
+        text={"우선 구매권"}
+      />
+    </div>
     <GoldenRayFX
       startFrame={485}
       durationFrames={469}
-      x={200}
-      y={100}
+      x={203}
+      y={208}
       rayCount={8}
       color={"#FFD700"}
     />

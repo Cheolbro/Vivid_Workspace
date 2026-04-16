@@ -481,6 +481,38 @@ def _props_to_jsx(props: dict) -> str:
     return " ".join(parts)
 
 
+def _wrap_with_scale(inner_jsx: str, eff: dict) -> str:
+    """
+    FX 컴포넌트 JSX 문자열을 DynamicSlide.tsx wrapFX와 동일한 scale 래퍼 div로 감쌉니다.
+    scale = commonProps.width / 400 (baseline 400px).
+    cx/cy: CENTER-RELATIVE x/y → 절대 좌표 (1920/2 + x, 1080/2 + y).
+    scale이 1.0에 가까우면 래퍼 없이 inner_jsx를 그대로 반환.
+    """
+    BASELINE_W = 400
+    cp = eff.get("commonProps", {})
+    w  = cp.get("width",  eff.get("width",  BASELINE_W))
+    x  = cp.get("x",     eff.get("x",      0))
+    y  = cp.get("y",     eff.get("y",      0))
+    z  = eff.get("zIndex", 0)
+    try:
+        w = float(w)
+    except (TypeError, ValueError):
+        w = BASELINE_W
+    scale = w / BASELINE_W
+    if abs(scale - 1.0) < 0.001:
+        return inner_jsx
+    cx = 1920 / 2 + float(x)
+    cy = 1080 / 2 + float(y)
+    return (
+        f'      <div style={{{{ position: "absolute", inset: 0,'
+        f' transform: "scale({scale:.4f})",'
+        f' transformOrigin: "{cx:.1f}px {cy:.1f}px",'
+        f' zIndex: {z}, pointerEvents: "none" }}}}>\n'
+        f'        {inner_jsx.strip()}\n'
+        f'      </div>'
+    )
+
+
 def _build_slide_tsx(
     slide_id: str,
     effects: list[dict],
@@ -554,10 +586,11 @@ def _build_slide_tsx(
             sp  = _merge_fx_props(eff)
             p_s = _props_to_jsx(sp)
             imports_set.add(f'import {{ {cn} }} from "../components/fx/{fn}";')
-            fx_lines.append(
-                f'      <{cn} startFrame={{{local_start}}}'
+            inner = (
+                f'<{cn} startFrame={{{local_start}}}'
                 f' durationFrames={{{dur_f}}} {p_s} />'
             )
+            fx_lines.append(_wrap_with_scale(f'      {inner}', eff))
 
         elif (SHARED_FX_DIR / f"{etype}.tsx").exists():
             # type = 컴포넌트명 직접 지정 (예: "GoldenRayFX", "HighlighterFX")
@@ -567,10 +600,11 @@ def _build_slide_tsx(
             sp  = _merge_fx_props(eff)
             p_s = _props_to_jsx(sp)
             imports_set.add(f'import {{ {cn} }} from "../components/fx/{fn}";')
-            fx_lines.append(
-                f'      <{cn} startFrame={{{local_start}}}'
+            inner = (
+                f'<{cn} startFrame={{{local_start}}}'
                 f' durationFrames={{{dur_f}}} {p_s} />'
             )
+            fx_lines.append(_wrap_with_scale(f'      {inner}', eff))
 
     cname    = f"Slide_{slide_id}"
     subs_str = json.dumps(subtitles, ensure_ascii=False)

@@ -1,0 +1,4 @@
+playwright==1.42.0
+win10toast
+plyer
+google-generativeai

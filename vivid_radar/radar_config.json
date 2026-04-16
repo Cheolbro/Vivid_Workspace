@@ -1,0 +1,18 @@
+{
+  "a1_min_subscribers": 5000,
+  "a1_activity_days": 7,
+  "a1_activity_count": 4,
+  "a1_performance_threshold": 3.0,
+  "a1_min_channels": 3,
+  "a2_vph_threshold": 100,
+  "a2_outlier_threshold": 2.0,
+  "a2_min_topics": 3,
+  "my_subscriber_count": 100,
+  "profiles": {
+    "SCbiz": "C:\\Users\\lsc95\\AppData\\Local\\Google\\Chrome\\User Data\\Profile 7",
+    "seungcheol": "C:\\Users\\lsc95\\AppData\\Local\\Google\\Chrome\\User Data\\Profile 8",
+    "SCbiz2": "C:\\Users\\lsc95\\AppData\\Local\\Google\\Chrome\\User Data\\Profile 9"
+  },
+  "headless": true,
+  "user_data_dir": null
+}

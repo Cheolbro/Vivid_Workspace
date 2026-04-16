@@ -41,7 +41,7 @@ interface DragState {
   startX: number; // mousedown 시 pageX
   origStart: number; // mousedown 시 startFrame
   origDur: number; // mousedown 시 durationFrames
-  framesPerPx: number; // 드래그 계수
+  // framesPerPx는 캐싱하지 않음 — onMove 시 DOM 기준으로 신선하게 계산
 }
 
 // ── 눈금자 ────────────────────────────────────────────────────────────────
@@ -304,12 +304,15 @@ export default function MiniTimeline({
   const dragRef = useRef<DragState | null>(null);
   const playheadDragging = useRef(false);
   const [trackW, setTrackW] = useState(500);
+  // trackWRef: 항상 최신 trackW를 보관 — document 레벨 이벤트 핸들러에서 stale closure 방지용
+  const trackWRef = useRef(500);
 
   const pageXToFrame = (pageX: number): number => {
     if (!trackRef.current) return 0;
     const rect = trackRef.current.getBoundingClientRect();
     const total = Math.max(1, slide.durationFrames);
-    const ppf = trackW / total;
+    // trackWRef.current 사용 → 항상 신선한 값 보장
+    const ppf = trackWRef.current / total;
     return Math.max(0, Math.min(Math.round((pageX - rect.left - LABEL_W) / ppf), total));
   };
 
@@ -318,7 +321,11 @@ export default function MiniTimeline({
     if (!trackRef.current) return;
     const ro = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect.width;
-      if (w) setTrackW(w - LABEL_W);
+      if (w) {
+        const newW = w - LABEL_W;
+        setTrackW(newW);
+        trackWRef.current = newW; // ref도 동기 업데이트
+      }
     });
     ro.observe(trackRef.current);
     return () => ro.disconnect();
@@ -338,11 +345,11 @@ export default function MiniTimeline({
         startX: pageX,
         origStart: eff.startFrame,
         origDur: eff.durationFrames,
-        framesPerPx: 1 / pxPerFrame,
+        // framesPerPx 캐싱 제거 — onMove에서 DOM 기준으로 직접 계산
       };
       onEffectSelect(effectId);
     },
-    [slide.effects, pxPerFrame, onEffectSelect]
+    [slide.effects, onEffectSelect]
   );
 
   // ── 드래그 중 (document 레벨) ───────────────────────────────────────────
@@ -355,8 +362,13 @@ export default function MiniTimeline({
       const drag = dragRef.current;
       if (!drag) return;
 
+      // framesPerPx를 DOM에서 매번 신선하게 계산 (stale state 버그 방지)
+      const currentTrackW = trackWRef.current;
+      if (currentTrackW <= 0) return;
+      const freshPxPerFrame = currentTrackW / totalFrames;
+
       const deltaX = e.pageX - drag.startX;
-      const deltaFrames = Math.round(deltaX * drag.framesPerPx);
+      const deltaFrames = Math.round(deltaX / freshPxPerFrame);
 
       const eff = slide.effects.find((f) => f.id === drag.effectId);
       if (!eff) return;
@@ -492,8 +504,8 @@ export default function MiniTimeline({
           style={{
             position: "absolute",
             left: LABEL_W + currentFrame * pxPerFrame,
-            top: RULER_H - 6,
-            fontSize: 10,
+            top: RULER_H - 12, // 크기가 커졌으므로 위치 보정 (기존 -6)
+            fontSize: 20, // 10 -> 20 (2배)
             color: "#ff5252",
             transform: "translateX(-50%)",
             cursor: "ew-resize",

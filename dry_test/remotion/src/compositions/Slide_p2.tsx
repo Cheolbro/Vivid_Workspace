@@ -1,9 +1,9 @@
 import React from "react";
 import { Img, staticFile } from "remotion";
-import { SubtitleOverlay } from "../components/SubtitleOverlay";
-import { PopupElement } from "../components/PopupElement";
 import { OilFillFX } from "../components/fx/OilFillFX";
+import { SubtitleOverlay } from "../components/SubtitleOverlay";
 import { TypewriterFX } from "../components/fx/TypewriterFX";
+import { PopupElement } from "../components/PopupElement";
 import { HighlighterFX } from "../components/fx/HighlighterFX";
 
 interface Props {
@@ -33,27 +33,51 @@ export const Slide_p2: React.FC<Props> = ({ previewMode = false }) => (
       width="100%"
       maxHeight="70%"
     />
-    <TypewriterFX
-      startFrame={45}
-      durationFrames={709}
-      x={300}
-      y={-250}
-      fontSize={"80px"}
-      color={"#FFFFFF"}
-      speed={7}
-      text={"'국제 공동 비축'"}
-    />
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        transform: "scale(1.9625)",
+        transformOrigin: "1017.0px 375.0px",
+        zIndex: 0,
+        pointerEvents: "none",
+      }}
+    >
+      <TypewriterFX
+        startFrame={45}
+        durationFrames={709}
+        x={57}
+        y={-165}
+        fontSize={"80px"}
+        width={785}
+        height={455}
+        color={"#fff9bf"}
+        speed={7}
+        text={"국제 공동 비축"}
+      />
+    </div>
     <HighlighterFX
       startFrame={285}
       durationFrames={469}
-      x={-300}
-      y={300}
+      x={36}
+      y={-348}
       fontSize={"80px"}
       highlightColor={"#FFE500"}
       textColor={"#1A1A1A"}
       text={"위기 시 가장 먼저!"}
     />
-    <OilFillFX startFrame={45} durationFrames={709} x={0} y={0} />
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        transform: "scale(0.6825)",
+        transformOrigin: "1596.0px 758.0px",
+        zIndex: 0,
+        pointerEvents: "none",
+      }}
+    >
+      <OilFillFX startFrame={45} durationFrames={709} x={636} y={218} width={273} height={478} />
+    </div>
     {previewMode && (
       <SubtitleOverlay
         subtitles={[

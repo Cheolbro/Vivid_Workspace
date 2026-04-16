@@ -170,6 +170,7 @@ export default function VividStudio() {
   );
 
   // ── Effect 선택 ────────────────────────────────────────────────────────
+  // 객체 선택 시 프레임 이동 방지 (Auto-jump 제거)
   const handleEffectSelect = useCallback((id: string) => {
     setSelectedEffectId(id || null);
   }, []);
@@ -287,24 +288,23 @@ export default function VividStudio() {
               </button>
             </div>
 
-            {/* 탭 콘텐츠 */}
-            <div style={s.tabContent}>
-              {rightTab === "edit" ? (
-                <EditPanel
-                  plan={plan}
-                  loading={loading}
-                  saving={saving}
-                  selectedSlideIdx={selectedSlideIdx}
-                  selectedEffectId={selectedEffectId}
-                  onSlideSelect={handleSlideSelect}
-                  onEffectSelect={handleEffectSelect}
-                  onSlideChange={handleSlideChange}
-                  onSave={handleSave}
-                  onReset={fetchPlan}
-                />
-              ) : (
-                <AIChatPanel plan={plan} onPlanUpdate={handlePlanUpdate} />
-              )}
+            {/* 탭 콘텐츠 — display:none으로 숨김(unmount 방지 → 채팅 이력 유지) */}
+            <div style={{ ...s.tabContent, display: rightTab === "edit" ? "flex" : "none" }}>
+              <EditPanel
+                plan={plan}
+                loading={loading}
+                saving={saving}
+                selectedSlideIdx={selectedSlideIdx}
+                selectedEffectId={selectedEffectId}
+                onSlideSelect={handleSlideSelect}
+                onEffectSelect={handleEffectSelect}
+                onSlideChange={handleSlideChange}
+                onSave={handleSave}
+                onReset={fetchPlan}
+              />
+            </div>
+            <div style={{ ...s.tabContent, display: rightTab === "chat" ? "flex" : "none" }}>
+              <AIChatPanel plan={plan} onPlanUpdate={handlePlanUpdate} />
             </div>
           </div>
         </div>

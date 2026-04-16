@@ -859,6 +859,16 @@ class Step4Widget(QWidget):
         report = "\n".join(applied + unmatched)
         self._log.success(f"시맨틱 매칭 완료:\n{report}")
 
+        # [추가] 매칭 결과가 반영된 plan을 디스크에 즉시 저장 (VIVID Studio 동기화)
+        if self._project_dir and self._plan:
+            plan_p = self._project_dir / "asset" / "remotion_plan.json"
+            try:
+                with open(plan_p, "w", encoding="utf-8") as f:
+                    json.dump(self._plan, f, ensure_ascii=False, indent=2)
+                self._log.success("시맨틱 매칭 정보가 기획안 파일에 저장되었습니다.")
+            except Exception as e:
+                self._log.error(f"기획안 파일 저장 중 오류 발생: {e}")
+
         self._launch_both()
 
     def _on_match_error(self, msg: str):
@@ -1029,6 +1039,23 @@ class Step4Widget(QWidget):
         remotion_dir = self._project_dir / "remotion"
         renders_dir  = self._project_dir / "asset" / "renders"
         cache_path   = self._project_dir / "asset" / "render_cache.json"
+
+        # ── VIVID Studio 편집 내용 강제 동기화 ──────────────────────────────
+        # POST /api/plan 으로 저장된 최신 remotion_plan.json을 다시 읽어
+        # 메모리의 self._plan(업로드 시점 스냅샷)을 갱신한다.
+        plan_path = self._project_dir / "asset" / "remotion_plan.json"
+        if plan_path.exists():
+            try:
+                refreshed = parse_plan_json(plan_path)
+                timeline_path = self._project_dir / "asset" / "base_timeline.json"
+                generate_compositions(
+                    refreshed, remotion_dir,
+                    timeline_path=timeline_path if timeline_path.exists() else None,
+                )
+                self._plan = refreshed
+                self._log.info("최신 기획안으로 렌더링 동기화 완료.")
+            except Exception as e:
+                self._log.error(f"기획안 동기화 실패: {e}\n메모리 버전으로 렌더링 진행합니다.")
 
         # 타이밍 & 카운터 초기화
         self._render_start_time  = time.time()

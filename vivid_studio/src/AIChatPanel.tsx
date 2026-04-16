@@ -13,6 +13,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RemotionPlan } from "./types";
 
+// ── FX 미리보기 상태 ───────────────────────────────────────────────────────
+interface PendingFx {
+  filename: string; // e.g. "OilLeakFX.tsx"
+  code: string; // 현재 미리보기 중인 코드
+}
+
 // ── API 응답 타입 ──────────────────────────────────────────────────────────
 interface PlanUpdateResponse {
   type: "plan_update";
@@ -46,37 +52,17 @@ interface AIChatPanelProps {
   onPlanUpdate: (newPlan: RemotionPlan, summary: string) => void;
 }
 
-// ── 코드 블록 ──────────────────────────────────────────────────────────────
-function CodeBlock({ filename, code }: { filename: string; code: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-
-  return (
-    <div style={s.codeBlock}>
-      <div style={s.codeHeader}>
-        <span style={s.codeFilename}>{filename}</span>
-        <button style={s.copyBtn} onClick={handleCopy}>
-          {copied ? "✔ 복사됨" : "📋 복사"}
-        </button>
-      </div>
-      <pre style={s.codePre}>{code}</pre>
-    </div>
-  );
-}
-
 // ── 단일 메시지 버블 ────────────────────────────────────────────────────────
 function MessageBubble({
   msg,
   onApplyPlan,
+  pendingFx,
+  onFxPreview,
 }: {
   msg: ChatMessage;
   onApplyPlan: (plan: RemotionPlan, summary: string) => void;
+  pendingFx: PendingFx | null;
+  onFxPreview: (filename: string, code: string) => void;
 }) {
   const isUser = msg.role === "user";
   const isSys = msg.role === "system";
@@ -111,18 +97,29 @@ function MessageBubble({
           </div>
         )}
 
-        {/* tsx_code 응답 */}
+        {/* tsx_code 응답 — 미리보기 적용 버튼 */}
         {msg.response?.type === "tsx_code" && (
-          <div>
+          <div style={s.actionCard}>
             <div style={s.actionSummary}>✨ {msg.response.summary}</div>
-            <CodeBlock
-              filename={(msg.response as TsxCodeResponse).filename}
-              code={(msg.response as TsxCodeResponse).code}
-            />
-            <div style={s.tsxHint}>
-              💡 이 파일을 <code style={s.inlineCode}>shared_assets/shared_fx/</code>에 저장 후
-              4단계에서 재업로드하면 자동 매칭됩니다.
-            </div>
+            <div style={s.tsxHint}>{(msg.response as TsxCodeResponse).filename}</div>
+            {pendingFx?.filename === (msg.response as TsxCodeResponse).filename &&
+            pendingFx?.code === (msg.response as TsxCodeResponse).code ? (
+              <div style={{ ...s.tsxHint, color: "#4caf50", marginTop: 6 }}>
+                ✔ 미리보기 적용 중 — Remotion Studio에서 확인하세요.
+              </div>
+            ) : (
+              <button
+                style={s.previewBtn}
+                onClick={() =>
+                  onFxPreview(
+                    (msg.response as TsxCodeResponse).filename,
+                    (msg.response as TsxCodeResponse).code
+                  )
+                }
+              >
+                ▶ 미리보기 적용
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -143,6 +140,8 @@ export default function AIChatPanel({ plan, onPlanUpdate }: AIChatPanelProps) {
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [pendingFx, setPendingFx] = useState<PendingFx | null>(null);
+  const [fxBusy, setFxBusy] = useState(false);
   const msgEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const idRef = useRef(1);
@@ -163,10 +162,20 @@ export default function AIChatPanel({ plan, onPlanUpdate }: AIChatPanelProps) {
     setLoading(true);
 
     try {
+      // 최근 8개 대화 내역만 추출 (시스템 메시지 제외)
+      const history = messages
+        .filter((m) => m.role !== "system")
+        .slice(-8)
+        .map((m) => ({ role: m.role, text: m.text }));
+
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, plan: plan ?? undefined }),
+        body: JSON.stringify({
+          message: text,
+          plan: plan ?? undefined,
+          history: history,
+        }),
       });
 
       const data: ChatResponse = await res.json();
@@ -190,7 +199,7 @@ export default function AIChatPanel({ plan, onPlanUpdate }: AIChatPanelProps) {
       if (data.type === "plan_update") {
         displayText = `기획안 수정안을 생성했습니다: ${data.summary}`;
       } else if (data.type === "tsx_code") {
-        displayText = `TSX 코드를 생성했습니다: ${data.summary}`;
+        displayText = (data as TsxCodeResponse).summary;
       } else {
         displayText = data.content;
       }
@@ -224,6 +233,93 @@ export default function AIChatPanel({ plan, onPlanUpdate }: AIChatPanelProps) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    }
+  };
+
+  // ── FX 미리보기 / 되돌리기 / 반영 확정 ──────────────────────────────────
+  const handleFxPreview = async (filename: string, code: string) => {
+    setFxBusy(true);
+    try {
+      const r = await fetch("/api/fx/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename, code }),
+      });
+      if (!r.ok) throw new Error((await r.json()).detail ?? r.status);
+      setPendingFx({ filename, code });
+      setMessages((p) => [
+        ...p,
+        {
+          id: idRef.current++,
+          role: "system",
+          text: `미리보기 적용: ${filename} — Remotion Studio(localhost:3000)에서 확인하세요. 추가 수정을 요청하거나, 되돌리기/반영 버튼을 누르세요.`,
+        },
+      ]);
+    } catch (e) {
+      setMessages((p) => [
+        ...p,
+        { id: idRef.current++, role: "system", text: `❌ 미리보기 실패: ${(e as Error).message}` },
+      ]);
+    } finally {
+      setFxBusy(false);
+    }
+  };
+
+  const handleFxRevert = async () => {
+    if (!pendingFx) return;
+    setFxBusy(true);
+    try {
+      const r = await fetch("/api/fx/revert", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: pendingFx.filename }),
+      });
+      if (!r.ok) throw new Error((await r.json()).detail ?? r.status);
+      setMessages((p) => [
+        ...p,
+        {
+          id: idRef.current++,
+          role: "system",
+          text: `↩ ${pendingFx.filename} 원본으로 되돌렸습니다.`,
+        },
+      ]);
+      setPendingFx(null);
+    } catch (e) {
+      setMessages((p) => [
+        ...p,
+        { id: idRef.current++, role: "system", text: `❌ 되돌리기 실패: ${(e as Error).message}` },
+      ]);
+    } finally {
+      setFxBusy(false);
+    }
+  };
+
+  const handleFxCommit = async () => {
+    if (!pendingFx) return;
+    setFxBusy(true);
+    try {
+      const r = await fetch("/api/fx/commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: pendingFx.filename }),
+      });
+      if (!r.ok) throw new Error((await r.json()).detail ?? r.status);
+      setMessages((p) => [
+        ...p,
+        {
+          id: idRef.current++,
+          role: "system",
+          text: `✅ ${pendingFx.filename} 반영 확정! 이후 모든 프로젝트에서 새 연출로 적용됩니다.`,
+        },
+      ]);
+      setPendingFx(null);
+    } catch (e) {
+      setMessages((p) => [
+        ...p,
+        { id: idRef.current++, role: "system", text: `❌ 반영 실패: ${(e as Error).message}` },
+      ]);
+    } finally {
+      setFxBusy(false);
     }
   };
 
@@ -268,7 +364,13 @@ export default function AIChatPanel({ plan, onPlanUpdate }: AIChatPanelProps) {
       {/* 메시지 목록 */}
       <div style={s.messageList}>
         {messages.map((msg) => (
-          <MessageBubble key={msg.id} msg={msg} onApplyPlan={handleApplyPlan} />
+          <MessageBubble
+            key={msg.id}
+            msg={msg}
+            onApplyPlan={handleApplyPlan}
+            pendingFx={pendingFx}
+            onFxPreview={handleFxPreview}
+          />
         ))}
 
         {/* 로딩 인디케이터 */}
@@ -283,6 +385,31 @@ export default function AIChatPanel({ plan, onPlanUpdate }: AIChatPanelProps) {
 
         <div ref={msgEndRef} />
       </div>
+
+      {/* ── pendingFx 알림 바 ── */}
+      {pendingFx && (
+        <div style={s.fxBar}>
+          <div style={s.fxBarLabel}>
+            미리보기 중: <span style={{ color: "#e2b04a" }}>{pendingFx.filename}</span>
+          </div>
+          <div style={s.fxBarBtns}>
+            <button
+              style={{ ...s.fxBtn, ...s.fxBtnRevert }}
+              onClick={handleFxRevert}
+              disabled={fxBusy}
+            >
+              ↩ 되돌리기
+            </button>
+            <button
+              style={{ ...s.fxBtn, ...s.fxBtnCommit }}
+              onClick={handleFxCommit}
+              disabled={fxBusy}
+            >
+              ✅ 반영 확정
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 입력 영역 */}
       <div style={s.inputArea}>
@@ -315,7 +442,7 @@ export default function AIChatPanel({ plan, onPlanUpdate }: AIChatPanelProps) {
 
       {/* 힌트 */}
       <div style={s.hint}>
-        예: "슬라이드 2의 duration을 90f로 바꿔줘" · "새 flicker FX 코드 만들어줘"
+        예: "OilLeakFX 연출 바꿔줘" · "슬라이드 2 duration 90f로" · "새 FX 만들어줘"
       </div>
     </div>
   );
@@ -330,7 +457,8 @@ const s: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
-    flexShrink: 0,
+    flex: 1,
+    minHeight: 0,
   },
   panelHeader: {
     padding: "12px 14px",
@@ -355,6 +483,7 @@ const s: Record<string, React.CSSProperties> = {
   },
   messageList: {
     flex: 1,
+    minHeight: 0,
     overflowY: "auto",
     padding: "10px 10px",
     display: "flex",
@@ -450,59 +579,11 @@ const s: Record<string, React.CSSProperties> = {
     cursor: "pointer",
     alignSelf: "flex-start",
   },
-  codeBlock: {
-    background: "#060c14",
-    border: "1px solid #1a2a3a",
-    borderRadius: 5,
-    overflow: "hidden",
-  },
-  codeHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: "4px 8px",
-    background: "#0a1828",
-    borderBottom: "1px solid #1a2a3a",
-  },
-  codeFilename: {
-    fontSize: 10,
-    color: "#7ec8e3",
-    fontFamily: "monospace",
-  },
-  copyBtn: {
-    background: "none",
-    border: "1px solid #1a3040",
-    borderRadius: 3,
-    color: "#4a6a8a",
-    fontSize: 9,
-    cursor: "pointer",
-    padding: "2px 6px",
-  },
-  codePre: {
-    margin: 0,
-    padding: "8px",
-    fontSize: 9,
-    color: "#8ab8d8",
-    fontFamily: "monospace",
-    overflowX: "auto",
-    lineHeight: 1.5,
-    maxHeight: 200,
-    whiteSpace: "pre",
-  },
   tsxHint: {
     fontSize: 9,
     color: "#3a5a7a",
     marginTop: 4,
     lineHeight: 1.5,
-  },
-  inlineCode: {
-    background: "#0a1020",
-    border: "1px solid #1a2a3a",
-    borderRadius: 2,
-    padding: "0 3px",
-    fontSize: 9,
-    color: "#7ec8e3",
-    fontFamily: "monospace",
   },
   inputArea: {
     borderTop: "1px solid #0f3460",
@@ -548,4 +629,62 @@ const s: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   dots: { display: "inline-block", animation: "none" },
+
+  // ── FX 미리보기 알림 바 ───────────────────────────────────────────────────
+  fxBar: {
+    borderTop: "1px solid #e2b04a",
+    background: "#1a1200",
+    padding: "7px 10px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 6,
+    flexShrink: 0,
+  },
+  fxBarLabel: {
+    fontSize: 10,
+    color: "#c0c0c0",
+    lineHeight: 1.4,
+    flex: 1,
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  fxBarBtns: {
+    display: "flex",
+    gap: 5,
+    flexShrink: 0,
+  },
+  fxBtn: {
+    border: "none",
+    borderRadius: 4,
+    fontSize: 10,
+    fontWeight: 700,
+    cursor: "pointer",
+    padding: "4px 9px",
+    transition: "opacity 0.15s",
+  },
+  fxBtnRevert: {
+    background: "#2a1a0a",
+    color: "#e2a04a",
+    border: "1px solid #4a3a1a",
+  },
+  fxBtnCommit: {
+    background: "#0a2a0a",
+    color: "#6adf6a",
+    border: "1px solid #1a4a1a",
+  },
+  previewBtn: {
+    marginTop: 5,
+    padding: "4px 10px",
+    background: "#0f3460",
+    border: "1px solid #1a5a8a",
+    borderRadius: 4,
+    color: "#7ec8e3",
+    fontSize: 10,
+    fontWeight: 700,
+    cursor: "pointer",
+    display: "block",
+  },
 };

@@ -1,11 +1,11 @@
 import React from "react";
 import { Img, staticFile } from "remotion";
-import { SubtitleOverlay } from "../components/SubtitleOverlay";
-import { UnderlineFX } from "../components/fx/UnderlineFX";
-import { PopupElement } from "../components/PopupElement";
-import { WarningFrameFX } from "../components/fx/WarningFrameFX";
-import { OilLeakFX } from "../components/fx/OilLeakFX";
 import { GlowTextFX } from "../components/fx/GlowTextFX";
+import { WarningFrameFX } from "../components/fx/WarningFrameFX";
+import { SubtitleOverlay } from "../components/SubtitleOverlay";
+import { OilLeakFX } from "../components/fx/OilLeakFX";
+import { PopupElement } from "../components/PopupElement";
+import { UnderlineFX } from "../components/fx/UnderlineFX";
 
 interface Props {
   previewMode?: boolean;
@@ -37,16 +37,16 @@ export const Slide_p3: React.FC<Props> = ({ previewMode = false }) => (
     <WarningFrameFX
       startFrame={0}
       durationFrames={817}
-      x={0}
-      y={0}
-      color={"rgba(220,0,0,0.55)"}
+      x={-15}
+      y={52}
+      color={"#000000"}
       blinkSpeed={1.6}
     />
     <UnderlineFX
       startFrame={185}
       durationFrames={632}
-      x={350}
-      y={-200}
+      x={501}
+      y={-185}
       fontSize={"80px"}
       color={"#FFFFFF"}
       underlineColor={"#FF3333"}
@@ -55,14 +55,25 @@ export const Slide_p3: React.FC<Props> = ({ previewMode = false }) => (
     <GlowTextFX
       startFrame={485}
       durationFrames={332}
-      x={350}
-      y={50}
+      x={506}
+      y={53}
       fontSize={"90px"}
       color={"#FFD700"}
-      glowColor={"#FFD700"}
+      glowColor={"#adadad"}
       text={"눈 뜨고 코 베인 진실"}
     />
-    <OilLeakFX startFrame={185} durationFrames={632} x={-200} y={-100} />
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        transform: "scale(1.3750)",
+        transformOrigin: "718.0px 432.0px",
+        zIndex: 0,
+        pointerEvents: "none",
+      }}
+    >
+      <OilLeakFX startFrame={185} durationFrames={632} x={-242} y={-108} width={550} height={433} />
+    </div>
     {previewMode && (
       <SubtitleOverlay
         subtitles={[
