@@ -1,153 +1,231 @@
-# FX 카탈로그 (fx_catalog.txt)
-> **[자동 관리 파일]** `src/components/fx/`에 컴포넌트 추가/삭제 시 즉시 업데이트 필수.
-> 제미나이가 `remotion_plan.json` 작성 시 이 파일을 참조하여 `effect.type` 값을 결정합니다.
+# FX 카탈로그 (fx_catalog.txt) — Opal System Standard
+> **[시스템 연동용]** 이 카탈로그의 규칙은 `remotion_plan_creation_opal.json`의 생성 로직과 완벽히 일치해야 합니다.
+> 제미나이가 `remotion_plan.json` 작성 시 이 파일의 규칙을 최우선으로 따릅니다.
 
 ---
 
-## ★ Gemini용 JSON 작성 규칙 (필독 — 이 규칙을 어기면 렌더링 오류 발생)
+## ★ JSON 작성 규칙 (Opal System Schema)
 
 ### 규칙 1: `type` 필드 값 결정
+- 카탈로그 FX 사용 시: 컴포넌트 이름 **그대로** (예: `"LossChart3DFX"`, `"HighlighterFX"`)
+- 일반 텍스트 사용 시: `"Popup"` 고정
+- 이미지 배경 사용 시: `"Image"` 고정
 
-| 상황 | `type` 값 | 예시 |
-|---|---|---|
-| 카탈로그에 등록된 효과 사용 시 | 컴포넌트 이름 **그대로** | `"GoldenRayFX"`, `"HighlighterFX"` |
-| Popup 내장 컴포넌트 사용 시 | `"Popup"` 고정 | `"Popup"` |
-| 카탈로그에 **없는** 완전히 새 효과만 | `"Custom"` + `description` 상세 기술 | — |
+### 규칙 2: 속성(Props) 분리 작성 (중요)
+모든 요소는 공통 속성과 전용 속성으로 분리하여 작성합니다.
+- `commonProps`: `x`, `y`, `scale`, `width`, `fontSize` 등 위치와 크기 관련.
+- `specificProps`: 해당 FX에만 있는 고유 설정값. (없을 경우 `{}` 빈 객체 필수, 이 경우 채우지 말 것)
+- **시간 단위**: 모든 타이밍은 초(s)가 아닌 **프레임(Frames, 30fps 기준)** 단위를 사용합니다. (`startFrame`, `durationFrames`)
 
-> `"Custom"` 은 이 카탈로그에 없는 신규 효과 전용. 기등록 효과에 `"Custom"` 쓰면 불필요한 재코딩 발생.
+### 규칙 3: Image 배경 필수 요소
+- `src`: 배경 이미지 파일명 필수 (예: `"image_1.jpeg"`)
+- `kenBurns` 객체가 반드시 포함되어야 합니다.
+- 패턴: `zoom-center`, `pan-right`, `pan-left`, `zoom-out`, `pan-up`, `pan-down`
 
-### 규칙 2: props 위치 (★ 가장 많이 실수하는 부분)
+### 규칙 4: Popup(텍스트) 필수 요소
+- `animation`: `in`, `inDurationFrames`, `out`, `outDurationFrames`, `easing` 필드 필수.
+  - `in` 유효값: `slideFromLeft` | `slideFromRight` | `slideFromBottom` | `slideFromTop` | `fadeIn` | `scaleUp` | `typewriter` | `revealMask`
+  - `out` 유효값: `fadeOut` | `scaleDown` | `none`
+  - `easing` 유효값: `easeOutBack` | `easeOutExpo` | `easeInOutSine` | `linear`
+- `textStyle`: `color`, `fontWeight`, `shadow`, `background` 필드 필수.
+- **텍스트 배경은 반드시 투명**: `background: "transparent"`, `backgroundPadding: "0px"`, `borderRadius: "0px"`
+- **Sync-Exit 필수**: 같은 슬라이드의 모든 텍스트/FX는 `startFrame + durationFrames` 합산이 슬라이드 종료 프레임과 일치해야 합니다. 텍스트마다 `startFrame`을 다르게 설정하고, `durationFrames`는 각자 슬라이드 종료 프레임 기준으로 역산합니다.
 
-**Popup 타입:**
+---
+
+## 1. 텍스트 효과 (Text Effects)
+> 텍스트 자체의 애니메이션이나 강조 효과입니다.
+
+| ID | type 값 | 설명 | 주요 specificProps |
+|---|---|---|---|
+| T01 | HighlighterFX | 형광펜 배경 효과 | highlightColor |
+| T02 | TypewriterFX | 타이핑 효과 | speed |
+| T03 | GlowTextFX | 네온 광채 맥동 | glowColor, glowIntensity |
+| T04 | BlurRevealFX | 안개 속 등장 효과 | revealFrames |
+| T05 | UnderlineFX | 밑줄 애니메이션 | underlineColor, thickness |
+| T06 | RetroTerminalFX | 해킹 터미널 타이핑 | color |
+| T07 | NeonPulseGlowFX | 네온 사인 맥동 | neonColor |
+| T08 | BoldImpactSlideFX | 굵은 임팩트 슬라이드 텍스트 | text, fontSize, color, impactPower |
+| T09 | VerticalMaskSlideFX | 수직 마스크 슬라이드 텍스트 | text, fontSize, color, maskHeight |
+| T10 | CountUpFX | 카운트업 숫자 애니메이션 | startValue, endValue, prefix, suffix, fontSize, color, countDuration |
+| T11 | DataLabelFX | 말풍선 데이터 라벨 | text, subText, tailDirection, bgColor, textColor, fontSize |
+| T12 | ChangeIndicatorFX | 변화량 수치 인디케이터 (±%) | value, prefix, suffix, fontSize, decimals, label |
+
+---
+
+## 2. 시각 효과 (Visual Effects)
+
+### 텍스트 기반 시각 FX (Text-Visual FX)
+| ID | type 값 | 설명 | 주요 specificProps |
+|---|---|---|---|
+| V01 | SVGPathTypingFX | 펜으로 쓰는 선 애니메이션 | text, color |
+| V02 | SlidingBoxRevealFX | 박스 노출 스타일 | boxColor |
+| V03 | SparkleTrailFX | 화려한 파티클 분산 | sparkleColor |
+| V04 | BouncingBallFX | 공이 단어 위를 튐 | ballColor |
+| V05 | StaggeredFadeFX | 글자별 시차 등장 | staggerDelay |
+
+### 정적 시각 FX (Static 3D Assets)
+> specificProps가 `{}`인 항목은 고유 설정값 없음 — 채우지 말 것.
+
+| ID | type 값 | 설명 | 주요 specificProps |
+|---|---|---|---|
+| S01 | LossChart3DFX | 3D 하락/손실 차트 | {} |
+| S02 | GrowthChart3DFX | 3D 상승/성장 차트 | {} |
+| S03 | GreenUpArrow3DFX | 3D 초록 상향 화살표 | {} |
+| S04 | ProfitGraph3DFX | 수익 그래프 일러스트 | {} |
+| S05 | MushroomCloud3DFX | 핵폭발 버섯구름 | {} |
+| S06 | Battleship3DFX | 3D 전함 | {} |
+| S07 | Warship3DFX | 현대식 군함 | {} |
+| S08 | Airplane3DFX | 비행 중인 3D 비행기 | {} |
+| S09 | PassengerPlane3DFX | 여객기 일러스트 | {} |
+| S10 | PlaneSilhouette3DFX | 비행기 실루엣 | {} |
+| S11 | DeliveryTruck13DFX | 배달 트럭 1 | {} |
+| S12 | CityBus3DFX | 빨간색 도시 버스 | {} |
+| S13 | DeliveryTruck23DFX | 배달 트럭 2 | {} |
+| S14 | MoneyBag3DFX | 돈자루 | {} |
+| S15 | DollarPack3DFX | 달러 뭉치 | {} |
+| S16 | ConstructionSiteFX | 건설 현장 | {} |
+| S17 | AdvancedMicrochipFX | 반도체 칩 | {} |
+| S18 | MicrochipGreenFX | 초록색 회로 기판 | {} |
+| S19 | GasPumpClipartFX | 주유기 아이콘 | {} |
+| S20 | GasPumpOutlineFX | 주유기 아웃라인 | {} |
+| S21 | IndustryPlantFX | 산업 공장 시설 | {} |
+| S22 | FingerHeartFX | 3D 손가락 하트 | {} |
+| S23 | KoreaFlagCircleFX | 원형 태극기 | {} |
+| S24 | ChinaFlagCircleFX | 원형 오성홍기 | {} |
+| S25 | USFlagCircleFX | 원형 성조기 | {} |
+| S26 | OilBarrel3DFX | 3D 드럼통 | {} |
+| S27 | Generic3DAssetFX | 범용 3D 에셋 (파일명 직접 지정) | assetName |
+
+### 오버레이 / 분위기 FX (Overlay & Ambience FX)
+> 배경 위에 겹쳐 분위기를 연출하는 효과. 슬라이드 전체 지속 시간에 맞춰 사용.
+
+| ID | type 값 | 설명 | 주요 specificProps |
+|---|---|---|---|
+| O01 | GoldenRayFX | 황금빛 방사형 광선 | rayCount, particleCount, color, glowColor, spreadWidth |
+| O02 | MetallicReflectionFX | 금속 반사광 스윕 | angle, thickness, highlightColor, opacity, cycleFrames, blurPx |
+| O03 | CloudDriftFX | 구름/연무 흐림 오버레이 | intensity, cloudDensity, speed, direction |
+| O04 | BottomShadowFX | 화면 하단 그림자 | primaryColor, intensity, opacity |
+| O05 | VignetteFX | 주변 비네트 어둠 | intensity, color, fadeInFrames |
+| O06 | ParticleRainFX | 파티클 비/눈/잎 강하 | particleCount, color, speed, size, shape, opacity |
+| O07 | MoneyRainFX | 돈이 비처럼 떨어지는 효과 | particleCount, color, speed, size |
+
+### 충격 / 경고 FX (Impact & Alert FX)
+> 강조, 긴장감, 반전 순간에 단발로 사용.
+
+| ID | type 값 | 설명 | 주요 specificProps |
+|---|---|---|---|
+| A01 | GritShakeFX | 그런지 화면 흔들림 (충격) | intensity, shakeAmplitude, noiseOpacity |
+| A02 | ScreenFlashFX | 화면 강렬한 플래시 | flashColor, flashDuration, peakHold |
+| A03 | WarningFrameFX | 경고 테두리 점멸 | color, blinkSpeed, thickness |
+| A04 | FocusRingFX | 포커스 링 집중 효과 | ringColor, ringCount, maxSize, strokeWidth, cycleDuration |
+
+### 차트 / 데이터 FX (Chart & Data FX)
+> 수치 시각화에 특화.
+
+| ID | type 값 | 설명 | 주요 specificProps |
+|---|---|---|---|
+| C01 | SimpleBarChartFX | 심플 막대 차트 | bars, maxValue, barWidth, barGap, showValues, fontSize |
+| C02 | ProgressBarFX | 진행 막대 채움 애니메이션 | targetPercent, barColor, trackColor, barHeight, barWidth |
+| C03 | LineGraphFX | 라인 그래프 | {} |
+
+### 에너지 / 특수 FX (Energy & Specialty FX)
+| ID | type 값 | 설명 | 주요 specificProps |
+|---|---|---|---|
+| E01 | OilFillFX | 원유 채움 애니메이션 | fillColor, glowColor, particleCount, fillSpeed |
+| E02 | OilLeakFX | 원유 유출 효과 | particleCount, color, vx |
+
+### 동적 시각 FX (Dynamic Lottie FX)
+> specificProps가 `{}`인 항목은 고유 설정값 없음 — 채우지 말 것.
+
+| ID | type 값 | 설명 | 주요 specificProps |
+|---|---|---|---|
+| D01 | MoneyLottieFX | 지폐와 동전 애니메이션 | {} |
+| D02 | Coin3DLottieFX | 3D 동전 회전 | {} |
+| D03 | DollarLottieFX | 달러 기호 강조 | {} |
+| D04 | HandshakeLottieFX | 악수 모션 | {} |
+| D05 | HandshakeLoopLottieFX | 악수 루프 모션 | {} |
+| D06 | AnimatedLineGraphFX | 실시간 우상향 그래프 | {} |
+| D07 | GraphUpTrendLottieFX | 급격한 우상향 추세선 | {} |
+| D08 | GraphFluctuationLottieFX | 등락하는 그래프 (변동성) | {} |
+| D09 | GlobeRotatingLottieFX | 회전하는 지구본 | {} |
+| D10 | BombExplosionLottieFX | 폭탄 투하 및 폭발 | {} |
+| D11 | CoinsDropLottieFX | 동전 폭포 낙하 | {} |
+| D12 | MoneyRainLottieFX | 지폐 비 내리기 | {} |
+| D13 | MoneyStackLottieFX | 돈 더미 쌓기 | {} |
+| D14 | OilBarrelLottieFX | 오일 드럼통 | {} |
+| D15 | OilDropLottieFX | 오일 드롭 | {} |
+| D16 | ShieldProtectLottieFX | 방패 보호 | {} |
+| D17 | SuccessTickLottieFX | 성공 체크 표시 | {} |
+| D18 | SwordsConflictLottieFX | 검 충돌 대립 | {} |
+| D19 | BusinessCollabLottieFX | 비즈니스 협업 | {} |
+| D20 | CreativeIdeaLottieFX | 창의 아이디어 | {} |
+| D21 | SocialMarketingLottieFX | 소셜 마케팅 | {} |
+| D22 | ChinaFlagLottieFX | 중국 국기 | {} |
+| D23 | USAFlagLottieFX | 미국 국기 | {} |
+
+---
+
+## 3. 사용 예시 (remotion_plan.json 규격)
+> Opal 시스템이 최종 병합(Merger) 전 출력하는 개별 객체 형식입니다.
+> **Sync-Exit 규칙**: 슬라이드 종료 프레임이 300이면, 30프레임에 등장하는 텍스트의 durationFrames = 270, 60프레임에 등장하는 텍스트의 durationFrames = 240.
+
 ```json
-{ "type": "Popup", "src": "image_1.jpeg", "text": "설명", "commonProps": { "x": 0, "y": 0 } }
-```
-→ `src`, `text` 는 **최상위**에 작성.
-
-**FX 컴포넌트 타입 (HighlighterFX, TypewriterFX 등 카탈로그 등록 효과):**
-```json
-{
-  "type": "HighlighterFX",
-  "commonProps": { "x": -350, "y": -200, "fontSize": "80px" },
-  "specificProps": { "text": "강조할 텍스트", "highlightColor": "#FFE500" }
-}
-```
-→ `text` 를 포함한 **모든 FX 고유 props는 `specificProps` 안**에 작성.
-→ `x`, `y`, `fontSize` 는 `commonProps` 에 작성.
-→ **최상위에 `text` 절대 금지** (Popup 규칙과 혼용 금지).
-
----
-
-## 기본 내장 컴포넌트
-
-| ID | type 값 | 파일 경로 | 설명 | 필수 Props |
-|---|---|---|---|---|
-| 001 | `Popup` | `src/components/PopupElement.tsx` | 이미지 팝업 (페이드인/아웃 + 스케일 애니메이션) | `src`, `startFrame`, `durationFrames` |
-
----
-
-## 기등록 FX 컴포넌트 — 글로벌 공유 (shared_assets/shared_fx/)
-
-> 아래 FX는 모두 구현 완료된 공용 자산입니다.
-> `type` 필드에 아래 표의 **type 값(컴포넌트명)을 그대로** 입력하세요.
-> 모든 프로젝트는 `src/components/fx/` 심볼릭 링크를 통해 공유합니다.
-
-| ID | type 값 | 파일 경로 | 설명 | specificProps 기본값 |
-|---|---|---|---|---|
-| auto | `MoneyRainFX` | `src/components/fx/MoneyRainFX.tsx` | 황금 동전 효과 | `particleCount`=30 / `color`=#FFD700 / `speed`=5.0 / `size`=24 |
-| auto | `GoldenRayFX` | `src/components/fx/GoldenRayFX.tsx` | 황금빛 빛줄기 파티클 (쌀가마니 위 가치 연출) | `rayCount`=8 / `particleCount`=40 / `color`=#FFD700 / `glowColor`=#FFF0A0 / `spreadWidth`=320 |
-| auto | `OilFillFX` | `src/components/fx/OilFillFX.tsx` | 원유 차오름 + 홀로그램 파티클 — 탱크 내부를 흑갈색 원유가 easeInOut으로 가득 채우며 황금/청록 광채 파티클 부유 | `fillColor`=#1A0F00 / `glowColor`=#FFD700 / `particleCount`=28 / `width`=480 / `height`=320 / `fillSpeed`=0.75 |
-| auto | OilLeakFX | src/components/fx/OilLeakFX.tsx | 허공의 구멍에서 원유 유출 — 검은 구멍이 생기고 끈적한 원유가 아래로 줄줄 흘러내리는 효과. 중력 가속도 + 점성 늘어남 연출 | `particleCount`=60 / `crackCount`=2 / `color`=#050200 / `speed`=4.0 / `spreadAngle`=15 / `size`=12 / `glowColor`=#1A0A00 |
-
----
-
-## 텍스트 강조 FX 팩 (Text Emphasis Pack)
-
-> 50대 이상 타겟 — 묵직한 폰트·높은 대비·느린 애니메이션 기준 설계.
-> 모두 `spring` / `interpolate` / `useCurrentFrame` Remotion 네이티브 방식.
->
-> **★ T01·T03·T05는 All-in-One 시퀀스**: `revealStyle` prop으로 텍스트 등장(Step1) → 효과 발동(Step2)이 단일 컴포넌트 안에서 순차 진행.
-> `revealStyle='fade'`(기본): opacity 0→1 / `revealStyle='blur'`: opacity 상승 + blur 10px→0px
-
-| ID | type 값 | 파일 경로 | 설명 | specificProps 기본값 |
-|---|---|---|---|---|
-| T01 | `HighlighterFX` | `src/components/fx/HighlighterFX.tsx` | **[All-in-One]** 텍스트 등장(0~15f) → 형광펜 배경이 width 0→100% 뻗어나감 (spring Overshoot) | `text`="" / `revealStyle`="fade" / `fontSize`="72px" / `highlightColor`=#FFE500 / `opacity`=0.55 / `textColor`=#1A1A1A |
-| T02 | `TypewriterFX` | `src/components/fx/TypewriterFX.tsx` | 타이핑 효과 — 경제 리포트 작성 느낌, 커서 깜빡임 포함 | `text`="" / `fontSize`="64px" / `color`=#FFFFFF / `speed`=7 |
-| T03 | `GlowTextFX` | `src/components/fx/GlowTextFX.tsx` | **[All-in-One]** 텍스트 등장(0~15f) → sin 파형 Pulsing glow 무한 반복. 8프레임 램프업으로 자연스럽게 전환 | `text`="" / `revealStyle`="fade" / `fontSize`="80px" / `color`=#FFD700 / `glowColor`=#FFD700 / `glowIntensity`=22 / `cycleSeconds`=1.8 |
-| T04 | `BlurRevealFX` | `src/components/fx/BlurRevealFX.tsx` | 안개 속 등장 — blur 20px→0 + spring 안착 (다큐 느낌) | `text`="" / `fontSize`="72px" / `color`=#FFFFFF / `revealFrames`=30 |
-| T05 | `UnderlineFX` | `src/components/fx/UnderlineFX.tsx` | **[All-in-One]** 텍스트 등장(0~15f) → SVG stroke-dashoffset spring으로 밑줄이 경쾌하게 그어짐 | `text`="" / `revealStyle`="fade" / `fontSize`="72px" / `color`=#FFFFFF / `underlineColor`=#FF3333 / `thickness`=7 |
-
----
-
-## 데이터 시각화 FX 팩 (Data Visualization Pack)
-
-> 경제 수치·비율·증감을 한눈에 전달. Remotion 네이티브 전용 (spring / interpolate / useCurrentFrame).
-> 모든 수치는 `Intl.NumberFormat("ko-KR")` 으로 천 단위 콤마 자동 처리.
-
-| ID | type 값 | 파일 경로 | 설명 | specificProps 기본값 |
-|---|---|---|---|---|
-| D01 | `CountUpFX` | `src/components/fx/CountUpFX.tsx` | 정밀 숫자 카운팅 — easeOut cubic 커브로 굴러오다 안착 (가계부채 1,000조 등) | `startValue`=0 / `endValue`=1000 / `prefix`="" / `suffix`="" / `fontSize`="96px" / `color`=#FFD700 / `decimals`=0 |
-| D02 | `ChangeIndicatorFX` | `src/components/fx/ChangeIndicatorFX.tsx` | 상승/하락 지표 — TrendingUp/Down 아이콘 + spring 팝인. 한국 관례: 상승=빨강, 하락=파랑 | `value`=3.2 / `prefix`="" / `suffix`="%" / `fontSize`="80px" / `decimals`=1 / `label`="" |
-| D03 | `SimpleBarChartFX` | `src/components/fx/SimpleBarChartFX.tsx` | 간단 막대 차트 — spring stagger로 막대가 하단에서 성장, 값 레이블 팝인 | `bars`=[{label,value,color}…] / `chartHeight`=320 / `barWidth`=100 / `barGap`=28 / `showValues`=true / `fontSize`="36px" |
-| D04 | `ProgressBarFX` | `src/components/fx/ProgressBarFX.tsx` | 진행률 바 — easeOut cubic 채움 + 완료 pulse glow, 얇은 바(14px)로 깔끔 | `targetPercent`=78 / `barColor`=#FFD700 / `barHeight`=14 / `barWidth`=700 / `label`="" / `showPercent`=true / `fontSize`="52px" |
-| D05 | `DataLabelFX` | `src/components/fx/DataLabelFX.tsx` | 데이터 콜아웃 레이블 — spring 팝인 + 꼬리 말풍선, 차트·이미지 위 수치 강조 | `text`="" / `subText`="" / `tailDirection`="down" / `bgColor`=rgba(10,10,20,0.82) / `textColor`=#FFD700 / `fontSize`="52px" |
-
----
-
-## 화면 연출 FX 팩 (Screen Effects Pack)
-
-> 장면 전환·긴장감·집중 유도 등 화면 전체를 활용하는 연출 이펙트.
-> x, y props는 FocusRingFX에만 유효. 나머지는 화면 전체 오버레이.
-> 외부 라이브러리 없음 — `interpolate` / `Math.sin` / `useCurrentFrame` 순수 구현.
-
-| ID | type 값 | 파일 경로 | 설명 | specificProps 기본값 |
-|---|---|---|---|---|
-| S01 | `WarningFrameFX` | `src/components/fx/WarningFrameFX.tsx` | 위기 경고 프레임 — inset box-shadow + sin 루핑으로 테두리가 불길하게 점멸 | `color`="rgba(220,0,0,0.55)" / `blinkSpeed`=1.6 / `thickness`=80 |
-| S02 | `VignetteFX` | `src/components/fx/VignetteFX.tsx` | 비네팅 효과 — radial-gradient로 외곽 어둡게, 중앙 집중. 30프레임 서서히 스며듦 | `intensity`=0.75 / `color`="0,0,0" / `fadeInFrames`=30 |
-| S03 | `ScreenFlashFX` | `src/components/fx/ScreenFlashFX.tsx` | 화면 플래시 — Easing.out(exp) 날카로운 단발 플래시. 충격 키워드 타이밍에 삽입 | `flashColor`="rgba(255,255,255,1)" / `flashDuration`=12 / `peakHold`=2 |
-| S04 | `ParticleRainFX` | `src/components/fx/ParticleRainFX.tsx` | 파티클 하강 — 결정론적 시드 기반, 붉은 비(폭락)/황금 비(보조금) 등 상황별 색상 | `particleCount`=40 / `color`=#FFD700 / `speed`=4.0 / `size`=10 / `shape`="circle" / `opacity`=0.75 |
-| S05 | `FocusRingFX` | `src/components/fx/FocusRingFX.tsx` | 동심원 타겟팅 — 조준경/레이더 스타일 확산 링 루핑. 특정 좌표를 정확히 짚어줌 | `ringColor`=#FFD700 / `ringCount`=3 / `maxSize`=120 / `strokeWidth`=2 / `cycleDuration`=40 |
-
----
-
-## 사용 예시 (remotion_plan.json 작성 형식)
-
-```json
-{
-  "effects": [
-    {
-      "id": "p1_1_fx",
-      "type": "Popup",
-      "src": "image_1.jpeg",
-      "startFrame": 90,
-      "durationFrames": 60,
-      "commonProps": { "width": "70%", "maxHeight": "70%" }
-    },
-    {
-      "id": "p1_2_fx",
-      "type": "GoldenRayFX",
-      "startFrame": 150,
-      "durationFrames": 120,
-      "commonProps": { "x": 0, "y": 100 },
-      "specificProps": { "rayCount": 8, "color": "#FFD700" }
-    },
-    {
-      "id": "p2_1_fx",
-      "type": "FocusRingFX",
-      "startFrame": 0,
-      "durationFrames": 180,
-      "commonProps": { "x": 300, "y": -100 },
-      "specificProps": { "ringColor": "#FF3333", "maxSize": 150 }
-    },
-    {
-      "id": "p3_1_fx",
-      "type": "Custom",
-      "description": "폭발하는 원유 파이프라인 위로 불꽃이 치솟는 파티클 효과 (아직 카탈로그에 없는 신규 효과)",
-      "startFrame": 60,
-      "durationFrames": 90,
-      "commonProps": { "x": 0, "y": 0 },
-      "specificProps": {}
+  {
+    "id": "p1_1_bg",
+    "type": "Image",
+    "src": "image_1.jpeg",
+    "startFrame": 0,
+    "durationFrames": 300,
+    "commonProps": { "width": "100%", "height": "100%" },
+    "kenBurns": {
+      "startScale": 1.0, "endScale": 1.15,
+      "startX": 0, "endX": -30,
+      "easing": "easeInOutSine"
     }
-  ]
-}
+  },
+  {
+    "id": "p1_2_fx",
+    "type": "GrowthChart3DFX",
+    "startFrame": 30,
+    "durationFrames": 270,
+    "commonProps": { "x": 400, "y": -200, "scale": 1.5 },
+    "specificProps": {}
+  },
+  {
+    "id": "p1_3_txt",
+    "type": "Popup",
+    "text": "경제 성장률 5% 달성",
+    "startFrame": 60,
+    "durationFrames": 240,
+    "commonProps": { "x": 0, "y": 200, "fontSize": "100px" },
+    "animation": {
+      "in": "scaleUp", "inDurationFrames": 20,
+      "out": "fadeOut", "outDurationFrames": 15,
+      "easing": "easeOutBack"
+    },
+    "textStyle": {
+      "color": "#FFFFFF", "fontWeight": "800",
+      "shadow": "0 4px 20px rgba(0,0,0,0.5)",
+      "background": "transparent"
+    }
+  },
+  {
+    "id": "p1_4_txt",
+    "type": "Popup",
+    "text": "역대 최고 기록",
+    "startFrame": 120,
+    "durationFrames": 180,
+    "commonProps": { "x": 0, "y": 320, "fontSize": "80px" },
+    "animation": {
+      "in": "slideFromBottom", "inDurationFrames": 15,
+      "out": "fadeOut", "outDurationFrames": 15,
+      "easing": "easeOutExpo"
+    },
+    "textStyle": {
+      "color": "#FFD700", "fontWeight": "700",
+      "shadow": "0 2px 12px rgba(0,0,0,0.7)",
+      "background": "transparent"
+    }
+  }
 ```

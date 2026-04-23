@@ -543,7 +543,22 @@ def _build_slide_tsx(
         abs_start   = eff.get("startFrame", 0)
         local_start = abs_start - slide_start
 
-        if etype == "Popup":
+        if etype == "Image":
+            src_img = eff.get("src", "")
+            if src_img:
+                imports_set.add('import { ImageElement } from "../components/ImageElement";')
+                cp = eff.get("commonProps", {})
+                wval = cp.get("width", "100%")
+                hval = cp.get("height", "100%")
+                ken_burns = eff.get("kenBurns", {})
+                kb_str = json.dumps(ken_burns, ensure_ascii=False)
+                fx_lines.append(
+                    f'      {{previewMode && <ImageElement src="{src_img}"'
+                    f' startFrame={{{local_start}}} durationFrames={{{dur_f}}}'
+                    f' width="{wval}" height="{hval}" kenBurns={{{kb_str}}} />}}'
+                )
+
+        elif etype == "Popup":
             src_img = eff.get("src", "")
             text    = eff.get("text", "")
             cp      = eff.get("commonProps", {})
@@ -555,11 +570,17 @@ def _build_slide_tsx(
                 x_val   = cp.get("x", 0)
                 y_val   = cp.get("y", 0)
                 fs_val  = cp.get("fontSize", "80px")
+                w_val   = cp.get("width", "90%")
                 escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+                ts      = eff.get("textStyle", {})
+                ts_str  = json.dumps(ts, ensure_ascii=False)
+                anim    = eff.get("animation", {})
+                anim_str = json.dumps(anim, ensure_ascii=False)
                 fx_lines.append(
                     f'      <TextPopupElement text="{escaped}"'
                     f' startFrame={{{local_start}}} durationFrames={{{dur_f}}}'
-                    f' x={{{x_val}}} y={{{y_val}}} fontSize="{fs_val}" />'
+                    f' x={{{x_val}}} y={{{y_val}}} fontSize="{fs_val}" width="{w_val}"'
+                    f' textStyle={{{ts_str}}} animation={{{anim_str}}} />'
                 )
             elif src_img:
                 imports_set.add(
@@ -633,7 +654,8 @@ def _build_slide_tsx(
 
     # 배경이미지 (미리보기 전용)
     # staticFile() 사용 → Remotion 4.x dev-server 정적 자산 경로 자동 해석
-    if bg_src:
+    has_image_effect = any(e.get("type") == "Image" for e in effects)
+    if bg_src and not has_image_effect:
         lines.append("    {previewMode && (")
         lines.append(f'      <Img src={{staticFile("{bg_src}")}} style={{{{')
         lines.append(

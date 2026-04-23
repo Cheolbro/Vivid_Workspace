@@ -1,0 +1,176 @@
+import React from "react";
+import { useCurrentFrame, useVideoConfig, interpolate, spring, Easing } from "remotion";
+
+/**
+ * OilLeakFX — 허공의 구멍에서 원유 유출
+ * 
+ * 허공에 검은 구멍이 생기고, 그 틈에서 끈적한 검은 액체가
+ * 줄줄 흘러나오는 기괴하고 극적인 연출.
+ * 
+ * 구조:
+ *   ① 유출 구멍 (Hole) — 짙은 검은색 타원형 구멍이 서서히 나타남
+ *   ② 흘러내리는 액체 — 구멍 하단에서 액체 방울들이 중력에 의해 낙하
+ *   ③ 끈적임 연출 — 액체가 아래로 갈수록 길게 늘어남
+ *   ④ 파티클 소멸 — 화면 하단 혹은 일정 거리 낙하 후 소멸
+ * 
+ * commonProps  : startFrame, durationFrames, x, y
+ * specificProps: particleCount, crackCount, color, speed, 
+ *               spreadAngle, size, glowColor
+ */
+
+interface OilLeakFXProps {
+  startFrame?: number;
+  durationFrames?: number;
+  x?: number; // 화면 중심 기준 균열 중앙 X 오프셋
+  y?: number; // 화면 중심 기준 균열 중앙 Y 오프셋
+  particleCount?: number; // 파티클 총 수
+  crackCount?: number; // 구멍(균열) 지점 수
+  color?: string; // 원유 색상
+  speed?: number; // 낙하 속도 배율
+  spreadAngle?: number; // 좌우 확산 폭
+  size?: number; // 액체 방울 기본 크기
+  glowColor?: string; // 구멍 주변 광채 색상
+}
+
+const sr = (seed: number, offset = 0): number => {
+  const x = Math.sin(seed * 127.1 + offset * 311.7) * 43758.5453;
+  return x - Math.floor(x);
+};
+
+export const OilLeakFX: React.FC<OilLeakFXProps> = ({
+  startFrame = 0,
+  durationFrames = 150,
+  x = 0,
+  y = 0,
+  particleCount = 60,
+  crackCount = 2,
+  color = "#050200", // 거의 검은색
+  speed = 4.0,
+  spreadAngle = 15, // 아래로 흐르므로 좁게 설정
+  size = 12,
+  glowColor = "#1A0A00",
+}) => {
+  const frame = useCurrentFrame();
+  const { fps, width: vw, height: vh } = useVideoConfig();
+
+  const rel = frame - startFrame;
+  if (rel < 0 || rel >= durationFrames) return null;
+
+  const fadeIn = interpolate(rel, [0, 15], [0, 1], { extrapolateRight: "clamp" });
+  const fadeOut = interpolate(rel, [durationFrames - 15, durationFrames], [1, 0], { extrapolateLeft: "clamp" });
+  const globalOpacity = Math.min(fadeIn, fadeOut);
+
+  const cx = vw / 2 + x;
+  const cy = vh / 2 + y;
+
+  // 구멍 위치 정의
+  const holes = Array.from({ length: crackCount }, (_, ci) => ({
+    ox: (sr(ci, 5) - 0.5) * 300,
+    oy: (sr(ci, 6) - 0.5) * 80,
+    w: 60 + sr(ci, 7) * 40,
+    h: 20 + sr(ci, 8) * 20,
+  }));
+
+  // 액체 방울 파티클
+  const drips = Array.from({ length: particleCount }, (_, i) => {
+    const holeIdx = i % crackCount;
+    const hole = holes[holeIdx];
+
+    const delay = sr(i, 1) * durationFrames;
+    const localRel = rel - delay;
+    if (localRel < 0) return null;
+
+    const life = 50 + sr(i, 2) * 40;
+    if (localRel > life) return null;
+
+    const progress = localRel / life;
+
+    // 낙하 계산 (가속도 포함)
+    const driftX = (sr(i, 3) - 0.5) * spreadAngle * progress;
+    const fallDist = speed * (localRel * 0.8 + 0.1 * Math.pow(localRel, 1.8));
+
+    const px = hole.ox + (sr(i, 4) - 0.5) * hole.w * 0.6 + driftX;
+    const py = hole.oy + hole.h * 0.3 + fallDist;
+
+    // 액체가 늘어나는 효과 (점성)
+    const stretch = 1 + (speed * localRel) / 40;
+    const pWidth = size * (0.6 + sr(i, 9) * 0.5);
+    const pHeight = pWidth * stretch;
+
+    const pOpacity = interpolate(progress, [0, 0.1, 0.8, 1], [0, 1, 1, 0]);
+
+    return (
+      <div
+        key={i}
+        style={{
+          position: "absolute",
+          left: cx + px - pWidth / 2,
+          top: cy + py,
+          width: pWidth,
+          height: pHeight,
+          background: color,
+          borderRadius: "50% 50% 40% 40% / 30% 30% 70% 70%", // 물방울 모양
+          opacity: pOpacity,
+          filter: `blur(${pWidth * 0.1}px)`,
+          boxShadow: `0 0 4px ${glowColor}55`,
+        }}
+      />
+    );
+  });
+
+  // 구멍 렌더링
+  const renderedHoles = holes.map((h, i) => {
+    const appear = spring({
+      fps,
+      frame: rel - i * 10,
+      config: { damping: 12 },
+    });
+
+    return (
+      <div
+        key={`hole-${i}`}
+        style={{
+          position: "absolute",
+          left: cx + h.ox - (h.w * appear) / 2,
+          top: cy + h.oy - (h.h * appear) / 2,
+          width: h.w * appear,
+          height: h.h * appear,
+          background: "black",
+          borderRadius: "50%",
+          boxShadow: `inset 0 0 15px 5px ${glowColor}, 0 0 10px ${glowColor}aa`,
+          filter: "blur(2px)",
+          border: `1px solid ${glowColor}88`,
+        }}
+      >
+        {/* 구멍 내부의 넘쳐흐르는 느낌 */}
+        <div style={{
+          position: "absolute",
+          bottom: -5,
+          left: "10%",
+          width: "80%",
+          height: "40%",
+          background: color,
+          borderRadius: "50% 50% 0 0",
+          filter: "blur(4px)",
+        }} />
+      </div>
+    );
+  });
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        opacity: globalOpacity,
+        pointerEvents: "none",
+      }}
+    >
+      {drips}
+      {renderedHoles}
+    </div>
+  );
+};

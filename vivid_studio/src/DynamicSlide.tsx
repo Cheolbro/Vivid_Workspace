@@ -1,6 +1,8 @@
 import React from "react";
 import { AbsoluteFill } from "remotion";
 import { PopupElement } from "@rfx/PopupElement";
+import { ImageElement } from "@rfx/ImageElement";
+import { TextPopupElement } from "@rfx/TextPopupElement";
 import type { Effect } from "./types";
 import { VIDEO_W, VIDEO_H } from "./types";
 
@@ -120,8 +122,42 @@ function renderEffect(eff: Effect, idx: number): React.ReactNode {
     return wrapFX(FXComponent, withText);
   }
 
-  // 폴백: Popup, PopupElement, Custom (일반 이미지/에셋 계열)
-  if (["Popup", "PopupElement", "Custom"].includes(eff.type)) {
+  // 폴백: Popup, PopupElement, Custom, Image (일반 이미지/에셋 계열)
+  if (["Popup", "PopupElement", "Custom", "Image"].includes(eff.type)) {
+    // 텍스트 기반 팝업인 경우 TextPopupElement 렌더링
+    if (eff.type === "Popup" && text && !eff.src && !merged.src) {
+      return (
+        <TextPopupElement
+          key={eff.id ?? idx}
+          text={text}
+          startFrame={common.startFrame}
+          durationFrames={common.durationFrames}
+          x={common.x as number}
+          y={common.y as number}
+          fontSize={merged.fontSize}
+          width={merged.width}
+          textStyle={eff.textStyle ?? {}}
+          animation={eff.animation ?? {}}
+          style={{ zIndex: (eff.zIndex as number) ?? 0 }}
+        />
+      );
+    }
+
+    // 이미지 배경인 경우 ImageElement 렌더링 (kenBurns 지원)
+    if (eff.type === "Image") {
+      return (
+        <ImageElement
+          key={eff.id ?? idx}
+          src={src}
+          startFrame={common.startFrame}
+          durationFrames={common.durationFrames}
+          width={merged.width ?? "100%"}
+          height={merged.height ?? "100%"}
+          kenBurns={eff.kenBurns ?? {}}
+        />
+      );
+    }
+
     return (
       <PopupElement
         key={eff.id ?? idx}
