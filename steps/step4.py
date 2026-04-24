@@ -25,13 +25,18 @@ import time
 import webbrowser
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, QTimer
+from PySide6.QtCore import Qt, QObject, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStackedWidget, QFileDialog,
-    QProgressBar, QApplication,
-    QDialog, QTextEdit, QFrame, QScrollArea,
+    QProgressBar, QApplication, QColorDialog,
+    QDialog, QTextEdit, QFrame, QScrollArea, QTabWidget,
+    QDoubleSpinBox, QSpinBox, QSlider, QLineEdit, QStyle,
+    QSizePolicy,
 )
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebChannel import QWebChannel
+from PySide6.QtWebEngineCore import QWebEngineScript
 
 from utils.theme import C_HIGHLIGHT, C_SUCCESS, C_ERROR, C_BG_INPUT, C_BORDER, C_TEXT, SHARED_FX_DIR
 from utils.widgets import (
@@ -44,7 +49,269 @@ from utils.step4_workers import (
     ROOT_DIR, CATALOG_PATH, CONFIG_PATH, _NPX, _NPM,
     parse_plan_json, detect_custom_fx,
     RenderWorker, VrewWorker, GeminiWorker, SemanticMatchWorker,
+    N8nLaunchWorker,
 )
+
+
+import re as _re
+
+# ── HyperFrames 편집 UI 상수 ──────────────────────────────────────────────
+_HF_PREVIEW_W = 854
+_HF_PREVIEW_H = 480
+_HF_ZOOM      = _HF_PREVIEW_W / 1920   # ≈ 0.4448
+
+_EDITOR_JS = r"""
+(function () {
+    // ── Step 1: CSS class for editor visibility ───────────────────────────────────
+    // Using a CSS class (not inline !important) avoids touching GSAP's own
+    // inline-style cache.  Removing the class on play() leaves GSAP state intact.
+    var _st = document.createElement('style');
+    _st.innerHTML = [
+        '.hf-editor-visible { opacity: 1 !important; visibility: visible !important; }',
+        '.hf-rh {',
+        '  position: fixed; width: 20px; height: 20px;',
+        '  background: #FFD700; border: 2px solid #333; border-radius: 3px;',
+        '  z-index: 99999; transform: translate(-50%, -50%);',
+        '  box-sizing: border-box; pointer-events: all;',
+        '}'
+    ].join('\n');
+    document.head.appendChild(_st);
+
+    // ── Step 2: Locate the actual child timeline, not gsap.globalTimeline ────────
+    // `const tl` in the slide's inline <script> lives in that script's lexical scope
+    // and is NOT reachable via typeof/window from runJavaScript injection.
+    // gsap.globalTimeline also doesn't work: its clock starts at page-load, so
+    // seek(t) would not align with the child tl's local t=0.
+    // Solution: extract the first direct-child Timeline from globalTimeline.
+    function _getMainTl() {
+        if (typeof gsap === 'undefined') return null;
+        var direct = gsap.globalTimeline.getChildren(false, false, true);
+        if (direct.length) return direct[0];
+        var all = gsap.globalTimeline.getChildren(true, false, true);
+        return all.length ? all[0] : null;
+    }
+
+    var _mainTl = _getMainTl();
+    if (_mainTl) { _mainTl.pause(); window.__timelines = { main: _mainTl }; }
+
+    function _forceVisible() {
+        var c = document.getElementById('composition');
+        if (!c) { setTimeout(_forceVisible, 30); return; }
+        Array.from(c.children).forEach(function (el) { el.classList.add('hf-editor-visible'); });
+    }
+    _forceVisible();
+
+    var _handles = [], _resizing = false, _resizeDir = null;
+    var _resizeStartX, _resizeStartY, _resizeStartFontSize;
+
+    function _removeHandles() {
+        _handles.forEach(function (h) { if (h.parentNode) h.parentNode.removeChild(h); });
+        _handles = [];
+    }
+    function _addHandles(el) {
+        _removeHandles();
+        if (!el.classList.contains('text-common')) return;
+        var rect = el.getBoundingClientRect();
+        [['nw', rect.left,  rect.top   ],
+         ['ne', rect.right, rect.top   ],
+         ['sw', rect.left,  rect.bottom],
+         ['se', rect.right, rect.bottom]].forEach(function (c) {
+            var h = document.createElement('div');
+            h.className = 'hf-rh';
+            h.style.left   = c[1] + 'px';
+            h.style.top    = c[2] + 'px';
+            h.style.cursor = c[0] + '-resize';
+            (function (dir) {
+                h.addEventListener('mousedown', function (e) {
+                    e.stopPropagation(); e.preventDefault();
+                    _resizing = true; _resizeDir = dir;
+                    _resizeStartX = e.clientX; _resizeStartY = e.clientY;
+                    _resizeStartFontSize = parseFloat(window.getComputedStyle(el).fontSize) || 80;
+                });
+            })(c[0]);
+            document.body.appendChild(h);
+            _handles.push(h);
+        });
+    }
+
+    function init() {
+        if (!window.QWebChannel || !window.qt || !window.qt.webChannelTransport) {
+            setTimeout(init, 50); return;
+        }
+        new QWebChannel(window.qt.webChannelTransport, function (channel) {
+            var bridge = channel.objects.bridge;
+            var sel = null, dragging = false;
+            var dragSX, dragSY, elemSX, elemSY;
+
+            // Re-acquire in case timeline wasn't ready at outer init time
+            if (!window.__timelines) {
+                var tl2 = _getMainTl();
+                if (tl2) { tl2.pause(); window.__timelines = { main: tl2 }; }
+            }
+
+            function getSel(el) {
+                var classes = Array.from(el.classList).filter(function (c) {
+                    return c !== 'text-common' && c !== 'hf-editor-visible';
+                });
+                return classes.length ? '.' + classes[0] : (el.id ? '#' + el.id : el.tagName.toLowerCase());
+            }
+            function getProps(el) {
+                var cs = window.getComputedStyle(el);
+                return JSON.stringify({
+                    x: el.offsetLeft - 960, y: el.offsetTop - 540,
+                    fontSize: cs.fontSize, color: cs.color,
+                    text: el.innerText || ''
+                });
+            }
+            function choose(el) {
+                if (sel && sel !== el) sel.style.outline = '';
+                sel = el;
+                el.style.outline = '2px solid #FFD700';
+                el.style.outlineOffset = '4px';
+                _addHandles(el);
+                bridge.on_select(getSel(el), getProps(el));
+            }
+            function clear() {
+                if (sel) { sel.style.outline = ''; sel = null; }
+                _removeHandles();
+            }
+
+            var comp = document.getElementById('composition');
+            if (comp) {
+                Array.from(comp.children).forEach(function (child) {
+                    child.style.cursor = 'move';
+                    child.addEventListener('mousedown', function (e) {
+                        if (e.button !== 0 || _resizing) return;
+                        dragging = true;
+                        dragSX = e.clientX; dragSY = e.clientY;
+                        elemSX = e.currentTarget.offsetLeft;
+                        elemSY = e.currentTarget.offsetTop;
+                        choose(e.currentTarget);
+                        e.preventDefault();
+                    });
+                    child.addEventListener('click', function (e) { e.stopPropagation(); });
+                });
+                comp.addEventListener('click', function (e) { if (e.target === comp) clear(); });
+            }
+
+            document.addEventListener('mousemove', function (e) {
+                if (dragging && sel && !_resizing) {
+                    // setZoomFactor maps Qt widget px to CSS px internally — no zoom division
+                    var newLeft = elemSX + (e.clientX - dragSX);
+                    var newTop  = elemSY + (e.clientY - dragSY);
+                    sel.style.left = 'calc(50% + ' + (newLeft - 960) + 'px)';
+                    sel.style.top  = 'calc(50% + ' + (newTop  - 540) + 'px)';
+                    _removeHandles(); _addHandles(sel);
+                }
+                if (_resizing && sel) {
+                    var dx = e.clientX - _resizeStartX;
+                    var dy = e.clientY - _resizeStartY;
+                    var signX = (_resizeDir === 'ne' || _resizeDir === 'se') ? 1 : -1;
+                    var signY = (_resizeDir === 'sw' || _resizeDir === 'se') ? 1 : -1;
+                    var delta = Math.abs(dx) >= Math.abs(dy) ? dx * signX : dy * signY;
+                    sel.style.fontSize = Math.max(12, _resizeStartFontSize + delta * 0.5) + 'px';
+                    _removeHandles(); _addHandles(sel);
+                }
+            });
+            document.addEventListener('mouseup', function (e) {
+                if (dragging && !_resizing) {
+                    dragging = false;
+                    if (sel) {
+                        bridge.on_move(getSel(sel), sel.offsetLeft - 960, sel.offsetTop - 540);
+                        _removeHandles(); _addHandles(sel);
+                    }
+                }
+                if (_resizing) {
+                    _resizing = false;
+                    if (sel) {
+                        var newFs = window.getComputedStyle(sel).fontSize;
+                        bridge.on_prop_change(getSel(sel), 'fontSize', newFs);
+                        _removeHandles(); _addHandles(sel);
+                    }
+                }
+            });
+
+            window.__editor = {
+                scrub: function (t) {
+                    Object.values(window.__timelines || {}).forEach(function (tl) {
+                        tl.seek(t); tl.pause();
+                    });
+                    _forceVisible();
+                },
+                play: function () {
+                    // Remove class — GSAP's own inline-style state is preserved intact
+                    var c = document.getElementById('composition');
+                    if (c) Array.from(c.children).forEach(function (el) {
+                        el.classList.remove('hf-editor-visible');
+                    });
+                    Object.values(window.__timelines || {}).forEach(function (tl) {
+                        if (tl.progress() >= 0.99) tl.restart();
+                        else tl.play();
+                    });
+                },
+                pause: function () {
+                    Object.values(window.__timelines || {}).forEach(function (tl) { tl.pause(); });
+                    _forceVisible();
+                },
+                getCurrentTime: function () {
+                    var tls = Object.values(window.__timelines || {});
+                    return tls.length ? tls[0].time() : 0;
+                },
+                getDuration: function () {
+                    var comp = document.getElementById('composition');
+                    if (comp && comp.dataset.duration) return parseFloat(comp.dataset.duration);
+                    var tls = Object.values(window.__timelines || {});
+                    return tls.length ? tls[0].duration() : 10;
+                },
+                setProperty: function (selector, prop, value) {
+                    var el = document.querySelector(selector);
+                    if (!el) return;
+                    if (prop === 'x') el.style.left = 'calc(50% + ' + value + 'px)';
+                    else if (prop === 'y') el.style.top = 'calc(50% + ' + value + 'px)';
+                    else if (prop === 'fontSize') el.style.fontSize = (typeof value === 'number') ? value + 'px' : value;
+                    else if (prop === 'color') el.style.color = value;
+                    else if (prop === 'text') el.innerText = value;
+                }
+            };
+
+            bridge.on_ready(window.__editor.getDuration());
+        });
+    }
+    init();
+})();
+"""
+
+
+def _lint_hf_json(data: object) -> tuple[bool, str, str]:
+    """
+    hyperframes_compositions.json 구조 검증 (E-18).
+    Returns: (ok, severity, detail_message)
+    severity: "" | "light" | "severe"
+    """
+    if not isinstance(data, dict) or not data:
+        return False, "severe", "딕셔너리 형식이 아니거나 비어 있습니다."
+
+    total     = len(data)
+    bad_keys  = [k for k in data if not _re.match(r"^slide_\d+$", k)]
+    bad_html  = [
+        k for k, v in data.items()
+        if not isinstance(v, str) or "<!DOCTYPE" not in v[:200]
+    ]
+
+    if len(bad_html) == total:
+        sample = ", ".join(bad_html[:3])
+        return False, "severe", f"모든 슬라이드 HTML이 유효하지 않습니다. Opal에서 재생성해주세요.\n오류 슬라이드: {sample}"
+
+    issues: list[str] = []
+    if bad_keys:
+        issues.append(f"키 형식 오류 ({len(bad_keys)}개): {', '.join(bad_keys[:3])}")
+    if bad_html:
+        issues.append(f"HTML 누락 ({len(bad_html)}개): {', '.join(bad_html[:3])}")
+
+    if issues:
+        return False, "light", "\n".join(issues)
+
+    return True, "", f"슬라이드 {total}장 모두 정상"
 
 
 def _find_free_port(start: int, end: int) -> int:
@@ -220,6 +487,492 @@ class PreflightDialog(QDialog):
 
 
 # ══════════════════════════════════════════════
+# HfBridge  — QWebChannel JS↔Python 브리지
+# ══════════════════════════════════════════════
+
+class HfBridge(QObject):
+    element_selected   = Signal(str, str)           # selector, props_json
+    element_moved      = Signal(str, float, float)  # selector, x, y
+    editor_ready       = Signal(float)              # duration
+    element_prop_changed = Signal(str, str, str)    # selector, prop, value
+
+    @Slot(str, str)
+    def on_select(self, selector: str, props_json: str):
+        self.element_selected.emit(selector, props_json)
+
+    @Slot(str, float, float)
+    def on_move(self, selector: str, x: float, y: float):
+        self.element_moved.emit(selector, x, y)
+
+    @Slot(float)
+    def on_ready(self, duration: float):
+        self.editor_ready.emit(duration)
+
+    @Slot(str, str, str)
+    def on_prop_change(self, selector: str, prop: str, value: str):
+        self.element_prop_changed.emit(selector, prop, value)
+
+
+# ══════════════════════════════════════════════
+# HfEditorPanel  — 슬라이드 미리보기/편집 위젯
+# ══════════════════════════════════════════════
+
+class HfEditorPanel(QWidget):
+    delta_changed = Signal(str, dict)   # slide_key, delta
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._slide_keys:  list[str] = []
+        self._slide_idx:   int = 0
+        self._comps_dir:   Path | None = None
+        self._deltas:      dict[str, dict] = {}
+        self._undo_stack:  list[tuple[str, dict]] = []
+        self._redo_stack:  list[tuple[str, dict]] = []
+        self._sel_selector: str | None = None
+        self._duration:    float = 10.0
+        self._build_ui()
+        self._setup_channel()
+        self._play_timer = QTimer(self)
+        self._play_timer.setInterval(50)
+        self._play_timer.timeout.connect(self._on_play_tick)
+
+    # ── UI ───────────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(4)
+
+        # 슬라이드 네비게이션 바
+        nav = QHBoxLayout()
+        _style = self.style()
+        self._prev_btn = QPushButton()
+        self._prev_btn.setIcon(_style.standardIcon(QStyle.StandardPixmap.SP_ArrowLeft))
+        self._prev_btn.setToolTip("이전 슬라이드")
+        self._prev_btn.setFixedWidth(36)
+        self._prev_btn.clicked.connect(self._prev_slide)
+        self._slide_lbl = QLabel("슬라이드 없음")
+        self._slide_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._slide_lbl.setStyleSheet("color:#aaa; font-size:12px;")
+        self._next_btn = QPushButton()
+        self._next_btn.setIcon(_style.standardIcon(QStyle.StandardPixmap.SP_ArrowRight))
+        self._next_btn.setToolTip("다음 슬라이드")
+        self._next_btn.setFixedWidth(36)
+        self._next_btn.clicked.connect(self._next_slide)
+        self._undo_btn = QPushButton()
+        self._undo_btn.setIcon(_style.standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
+        self._undo_btn.setText("  되돌리기")
+        self._undo_btn.setToolTip("Undo (되돌리기)")
+        self._undo_btn.setEnabled(False)
+        self._undo_btn.clicked.connect(self._undo)
+        self._redo_btn = QPushButton()
+        self._redo_btn.setIcon(_style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward))
+        self._redo_btn.setText("  다시하기")
+        self._redo_btn.setToolTip("Redo (다시하기)")
+        self._redo_btn.setEnabled(False)
+        self._redo_btn.clicked.connect(self._redo)
+        nav.addWidget(self._prev_btn)
+        nav.addWidget(self._slide_lbl, 1)
+        nav.addWidget(self._next_btn)
+        nav.addSpacing(12)
+        nav.addWidget(self._undo_btn)
+        nav.addWidget(self._redo_btn)
+        root.addLayout(nav)
+
+        # 메인 영역: WebView + 속성 패널
+        main = QHBoxLayout()
+        main.setSpacing(8)
+
+        self._view = QWebEngineView()
+        self._view.setFixedSize(_HF_PREVIEW_W, _HF_PREVIEW_H)
+        main.addWidget(self._view)
+
+        # 속성 패널
+        prop = QWidget()
+        prop.setFixedWidth(190)
+        pl = QVBoxLayout(prop)
+        pl.setContentsMargins(6, 0, 0, 0)
+        pl.setSpacing(4)
+
+        self._sel_lbl = QLabel("요소를 클릭하여 선택")
+        self._sel_lbl.setStyleSheet("color:#888; font-size:11px;")
+        self._sel_lbl.setWordWrap(True)
+        pl.addWidget(self._sel_lbl)
+
+        def _lbl(t):
+            l = QLabel(t)
+            l.setStyleSheet("color:#aaa; font-size:11px; margin-top:4px;")
+            return l
+
+        pl.addWidget(_lbl("X (px, 중앙기준)"))
+        self._prop_x = QDoubleSpinBox()
+        self._prop_x.setRange(-960, 960); self._prop_x.setDecimals(0)
+        self._prop_x.valueChanged.connect(lambda v: self._set_prop("x", v))
+        pl.addWidget(self._prop_x)
+
+        pl.addWidget(_lbl("Y (px, 중앙기준)"))
+        self._prop_y = QDoubleSpinBox()
+        self._prop_y.setRange(-540, 540); self._prop_y.setDecimals(0)
+        self._prop_y.valueChanged.connect(lambda v: self._set_prop("y", v))
+        pl.addWidget(self._prop_y)
+
+        pl.addWidget(_lbl("Font Size"))
+        self._prop_fs = QSpinBox()
+        self._prop_fs.setRange(8, 300); self._prop_fs.setSuffix(" px")
+        self._prop_fs.valueChanged.connect(lambda v: self._set_prop("fontSize", f"{v}px"))
+        pl.addWidget(self._prop_fs)
+
+        pl.addWidget(_lbl("Color"))
+        self._prop_color_btn = QPushButton("■  색상 선택")
+        self._prop_color_btn.clicked.connect(self._pick_color)
+        pl.addWidget(self._prop_color_btn)
+
+        pl.addWidget(_lbl("텍스트"))
+        self._prop_text = QLineEdit()
+        self._prop_text.editingFinished.connect(
+            lambda: self._set_prop("text", self._prop_text.text())
+        )
+        pl.addWidget(self._prop_text)
+
+        pl.addWidget(_lbl("등장 시각 (초)"))
+        self._prop_gsap = QDoubleSpinBox()
+        self._prop_gsap.setRange(0, 300); self._prop_gsap.setDecimals(2)
+        self._prop_gsap.setSingleStep(0.1)
+        self._prop_gsap.valueChanged.connect(lambda v: self._set_prop("gsap_start", v))
+        pl.addWidget(self._prop_gsap)
+
+        pl.addStretch()
+        self._set_props_enabled(False)
+        main.addWidget(prop)
+        root.addLayout(main)
+
+        # 타임라인 스크러버
+        scrub = QHBoxLayout()
+        self._play_btn = QPushButton()
+        self._play_btn.setIcon(_style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self._play_btn.setToolTip("재생 / 일시정지")
+        self._play_btn.setFixedWidth(36)
+        self._play_btn.setCheckable(True)
+        self._play_btn.clicked.connect(self._toggle_play)
+        self._scrubber = QSlider(Qt.Orientation.Horizontal)
+        self._scrubber.setRange(0, 1000)
+        self._scrubber.setValue(0)
+        self._scrubber.sliderMoved.connect(self._on_scrub)
+        self._time_lbl = QLabel("0.0 s")
+        self._time_lbl.setFixedWidth(52)
+        self._time_lbl.setStyleSheet("color:#888; font-size:11px;")
+        scrub.addWidget(self._play_btn)
+        scrub.addWidget(self._scrubber, 1)
+        scrub.addWidget(self._time_lbl)
+        root.addLayout(scrub)
+
+    def _setup_channel(self):
+        self._bridge  = HfBridge()
+        self._channel = QWebChannel(self._view.page())
+        self._channel.registerObject("bridge", self._bridge)
+        self._view.page().setWebChannel(self._channel)
+
+        # qwebchannel.js를 DocumentCreation 시점에 자동 주입
+        qwc = QWebEngineScript()
+        qwc.setName("qwebchannel-js")
+        qwc.setSourceUrl(QUrl("qrc:///qtwebchannel/qwebchannel.js"))
+        qwc.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        qwc.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+        self._view.page().scripts().insert(qwc)
+
+        self._bridge.element_selected.connect(self._on_element_selected)
+        self._bridge.element_moved.connect(self._on_element_moved)
+        self._bridge.editor_ready.connect(self._on_editor_ready)
+        self._bridge.element_prop_changed.connect(self._on_element_prop_changed)
+        self._view.loadFinished.connect(self._on_load_finished)
+        self._view.page().setZoomFactor(_HF_ZOOM)
+
+    # ── Public API ────────────────────────────────────────────────────────
+
+    def load_compositions(self, comps_dir: Path, slide_keys: list[str]):
+        self._comps_dir  = comps_dir
+        self._slide_keys = slide_keys
+        self._slide_idx  = 0
+        self._deltas     = {}
+        self._undo_stack = []
+        self._redo_stack = []
+        self._undo_btn.setEnabled(False)
+        self._redo_btn.setEnabled(False)
+        self._load_slide()
+
+    def unload(self):
+        self._slide_keys   = []
+        self._slide_idx    = 0
+        self._comps_dir    = None
+        self._deltas       = {}
+        self._undo_stack   = []
+        self._redo_stack   = []
+        self._sel_selector = None
+        self._undo_btn.setEnabled(False)
+        self._redo_btn.setEnabled(False)
+        self._slide_lbl.setText("슬라이드 없음")
+        self._sel_lbl.setText("요소를 클릭하여 선택")
+        self._set_props_enabled(False)
+        self._scrubber.setValue(0)
+        self._time_lbl.setText("0.0 s")
+        self._play_timer.stop()
+        self._view.setHtml("")
+
+    # ── 슬라이드 네비게이션 ───────────────────────────────────────────────
+
+    def _load_slide(self):
+        if not self._slide_keys or not self._comps_dir:
+            return
+        key   = self._current_key()
+        n     = self._slide_idx + 1
+        total = len(self._slide_keys)
+        self._slide_lbl.setText(f"Slide {n:02d} / {total:02d}  ({key})")
+        self._sel_selector = None
+        self._sel_lbl.setText("요소를 클릭하여 선택")
+        self._set_props_enabled(False)
+        self._scrubber.setValue(0)
+        self._time_lbl.setText("0.0 s")
+        self._play_timer.stop()
+        if self._play_btn.isChecked():
+            self._play_btn.setChecked(False)
+            self._play_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+
+        html_path = self._comps_dir / f"{key}.html"
+        if html_path.exists():
+            self._view.load(QUrl.fromLocalFile(str(html_path)))
+
+        if key not in self._deltas:
+            delta_path = self._comps_dir / f"{key}_delta.json"
+            if delta_path.exists():
+                try:
+                    self._deltas[key] = json.loads(delta_path.read_text(encoding="utf-8"))
+                except Exception:
+                    self._deltas[key] = {}
+            else:
+                self._deltas[key] = {}
+
+    def _prev_slide(self):
+        if self._slide_idx > 0:
+            self._slide_idx -= 1
+            self._load_slide()
+
+    def _next_slide(self):
+        if self._slide_idx < len(self._slide_keys) - 1:
+            self._slide_idx += 1
+            self._load_slide()
+
+    # ── WebEngine 콜백 ───────────────────────────────────────────────────
+
+    def _on_load_finished(self, ok: bool):
+        if not ok:
+            return
+        self._view.page().runJavaScript(f"window.__hfZoom = {_HF_ZOOM};")
+        self._view.page().runJavaScript(_EDITOR_JS)
+
+    def _on_editor_ready(self, duration: float):
+        self._duration = max(float(duration), 1.0)
+
+    def _on_element_selected(self, selector: str, props_json: str):
+        try:
+            props = json.loads(props_json)
+        except Exception:
+            return
+        self._sel_selector = selector
+        self._sel_lbl.setText(f"선택: {selector}")
+        self._set_props_enabled(True)
+        self._block_signals(True)
+
+        fs_raw = props.get("fontSize", "16px").replace("px", "").strip()
+        try:
+            fs_val = int(float(fs_raw))
+        except Exception:
+            fs_val = 16
+
+        self._prop_x.setValue(props.get("x", 0))
+        self._prop_y.setValue(props.get("y", 0))
+        self._prop_fs.setValue(fs_val)
+        self._prop_text.setText(props.get("text", ""))
+
+        key  = self._current_key()
+        gsap = (self._deltas.get(key, {})
+                    .get("elements", {})
+                    .get(selector, {})
+                    .get("gsap_start", 0.0))
+        self._prop_gsap.setValue(gsap)
+
+        color_str = props.get("color", "rgb(255,255,255)")
+        self._prop_color_btn.setStyleSheet(
+            f"background:{color_str}; color:#000; padding:3px;"
+        )
+        self._block_signals(False)
+
+    def _on_element_moved(self, selector: str, x: float, y: float):
+        self._push_undo()
+        key  = self._current_key()
+        elem = self._deltas.setdefault(key, {}).setdefault("elements", {}).setdefault(selector, {})
+        elem["x"] = x
+        elem["y"] = y
+        self._save_delta(key)
+        self.delta_changed.emit(key, self._deltas[key])
+        self._block_signals(True)
+        self._prop_x.setValue(x)
+        self._prop_y.setValue(y)
+        self._block_signals(False)
+
+    # ── 속성 변경 ─────────────────────────────────────────────────────────
+
+    def _set_prop(self, prop: str, value):
+        if not self._sel_selector:
+            return
+        key  = self._current_key()
+        elem = self._deltas.setdefault(key, {}).setdefault("elements", {}).setdefault(self._sel_selector, {})
+        elem[prop] = value
+        self._save_delta(key)
+        self.delta_changed.emit(key, self._deltas[key])
+
+        if prop != "gsap_start":
+            js_v = json.dumps(value) if isinstance(value, str) else str(value)
+            self._view.page().runJavaScript(
+                f"if(window.__editor)window.__editor.setProperty("
+                f"{json.dumps(self._sel_selector)},{json.dumps(prop)},{js_v});"
+            )
+
+    def _pick_color(self):
+        color = QColorDialog.getColor(parent=self)
+        if color.isValid():
+            h = color.name()
+            self._prop_color_btn.setStyleSheet(f"background:{h}; color:#000; padding:3px;")
+            self._set_prop("color", h)
+
+    # ── 스크러버 ──────────────────────────────────────────────────────────
+
+    def _toggle_play(self, checked: bool):
+        sp = self.style()
+        if checked:
+            self._play_btn.setIcon(sp.standardIcon(QStyle.StandardPixmap.SP_MediaPause))
+            self._view.page().runJavaScript("if(window.__editor)window.__editor.play();")
+            self._play_timer.start()
+        else:
+            self._play_btn.setIcon(sp.standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+            self._view.page().runJavaScript("if(window.__editor)window.__editor.pause();")
+            self._play_timer.stop()
+
+    def _on_scrub(self, val: int):
+        t = val / 1000.0 * self._duration
+        self._time_lbl.setText(f"{t:.1f} s")
+        self._view.page().runJavaScript(f"if(window.__editor)window.__editor.scrub({t});")
+        if self._play_btn.isChecked():
+            self._play_btn.setChecked(False)
+            self._play_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+            self._play_timer.stop()
+
+    def _on_play_tick(self):
+        def _cb(t):
+            if not self._play_btn.isChecked():
+                self._play_timer.stop()
+                return
+            if t is None:
+                return
+            t = float(t)
+            pos = int(t / self._duration * 1000) if self._duration > 0 else 0
+            self._scrubber.blockSignals(True)
+            self._scrubber.setValue(min(1000, pos))
+            self._scrubber.blockSignals(False)
+            self._time_lbl.setText(f"{t:.1f} s")
+            if t >= self._duration - 0.1:
+                self._play_timer.stop()
+                self._play_btn.setChecked(False)
+                self._play_btn.setIcon(
+                    self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+                )
+        self._view.page().runJavaScript(
+            "window.__editor ? window.__editor.getCurrentTime() : 0", _cb
+        )
+
+    def _on_element_prop_changed(self, selector: str, prop: str, value: str):
+        self._sel_selector = selector
+        # Save to delta and update the view
+        self._set_prop(prop, value)
+        # Sync property panel spinbox
+        if prop == "fontSize":
+            try:
+                fs_val = int(float(value.replace("px", "").strip()))
+                self._block_signals(True)
+                self._prop_fs.setValue(max(8, min(300, fs_val)))
+                self._block_signals(False)
+            except Exception:
+                pass
+
+    # ── Undo / Redo ───────────────────────────────────────────────────────
+
+    def _push_undo(self):
+        import copy
+        key  = self._current_key()
+        snap = (key, copy.deepcopy(self._deltas.get(key, {})))
+        self._undo_stack.append(snap)
+        if len(self._undo_stack) > 50:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self._undo_btn.setEnabled(True)
+        self._redo_btn.setEnabled(False)
+
+    def _undo(self):
+        if not self._undo_stack:
+            return
+        import copy
+        key = self._current_key()
+        self._redo_stack.append((key, copy.deepcopy(self._deltas.get(key, {}))))
+        snap_key, snap_delta = self._undo_stack.pop()
+        self._deltas[snap_key] = snap_delta
+        self._save_delta(snap_key)
+        self.delta_changed.emit(snap_key, snap_delta)
+        self._undo_btn.setEnabled(bool(self._undo_stack))
+        self._redo_btn.setEnabled(True)
+        if snap_key == key:
+            self._load_slide()
+
+    def _redo(self):
+        if not self._redo_stack:
+            return
+        import copy
+        key = self._current_key()
+        self._undo_stack.append((key, copy.deepcopy(self._deltas.get(key, {}))))
+        snap_key, snap_delta = self._redo_stack.pop()
+        self._deltas[snap_key] = snap_delta
+        self._save_delta(snap_key)
+        self.delta_changed.emit(snap_key, snap_delta)
+        self._undo_btn.setEnabled(True)
+        self._redo_btn.setEnabled(bool(self._redo_stack))
+        if snap_key == key:
+            self._load_slide()
+
+    # ── 헬퍼 ─────────────────────────────────────────────────────────────
+
+    def _current_key(self) -> str:
+        return self._slide_keys[self._slide_idx] if self._slide_keys else ""
+
+    def _save_delta(self, key: str):
+        if not self._comps_dir:
+            return
+        path  = self._comps_dir / f"{key}_delta.json"
+        delta = self._deltas.get(key, {})
+        try:
+            path.write_text(json.dumps(delta, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _set_props_enabled(self, enabled: bool):
+        for w in [self._prop_x, self._prop_y, self._prop_fs,
+                  self._prop_color_btn, self._prop_text, self._prop_gsap]:
+            w.setEnabled(enabled)
+
+    def _block_signals(self, block: bool):
+        for w in [self._prop_x, self._prop_y, self._prop_fs, self._prop_gsap]:
+            w.blockSignals(block)
+        self._prop_text.blockSignals(block)
+
+
+# ══════════════════════════════════════════════
 # Step4Widget
 # ══════════════════════════════════════════════
 
@@ -240,6 +993,8 @@ class Step4Widget(QWidget):
         self._gemini_worker: GeminiWorker | None = None
         self._match_thread:  QThread | None = None
         self._match_worker:  "SemanticMatchWorker | None" = None
+        self._n8n_thread:    QThread | None = None
+        self._n8n_worker:    "N8nLaunchWorker | None" = None
 
         # 타이밍 추적 (최종 리포트용)
         self._render_start_time: float | None = None
@@ -260,6 +1015,15 @@ class Step4Widget(QWidget):
         self._vite_proc: subprocess.Popen | None = None
         self._vite_port: int = 4000
 
+        # ── HyperFrames 관련 ──────────────────────────────────────────────
+        self._hf_compositions: dict | None = None
+        self._hf_render_thread: QThread | None = None
+        self._hf_render_worker = None
+        self._hf_vrew_thread:  QThread | None = None
+        self._hf_vrew_worker  = None
+        self._hf_latest_vrew:  Path | None = None
+        self._hf_render_start_time: float | None = None
+
         self._build_ui()
 
     # ── UI 구성 ──────────────────────────────────────────────────────────
@@ -269,7 +1033,22 @@ class Step4Widget(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── 고정 헤더: 제목 + 상태창 ──────────────────────────────────
+        # ── 전체 페이지를 하나의 스크롤 영역으로 감쌈 ──────────────────
+        outer_scroll = QScrollArea()
+        outer_scroll.setWidgetResizable(True)
+        outer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer_scroll.setStyleSheet(
+            "QScrollArea { border: none; background: transparent; }"
+            "QScrollBar:vertical { background: #1E1E1E; width: 8px; border-radius: 4px; }"
+            "QScrollBar::handle:vertical { background: #444; border-radius: 4px; }"
+        )
+
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(0)
+
+        # ── 헤더: 제목 + 상태창 ───────────────────────────────────────
         header = QWidget()
         hdr = QVBoxLayout(header)
         hdr.setContentsMargins(32, 24, 32, 8)
@@ -278,27 +1057,33 @@ class Step4Widget(QWidget):
         self._status_box = make_status_box()
         hdr.addWidget(self._status_box)
         self._log = StatusLogger(self._status_box)
-        root.addWidget(header)
+        page_layout.addWidget(header)
 
-        # ── 스크롤 영역: STEP A ~ 내비게이션 ─────────────────────────
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet(
-            "QScrollArea { border: none; background: transparent; }"
-            "QScrollBar:vertical { background: #1E1E1E; width: 8px; border-radius: 4px; }"
-            "QScrollBar::handle:vertical { background: #444; border-radius: 4px; }"
+        # ── 탭 위젯 ───────────────────────────────────────────────────
+        self._tab_widget = QTabWidget()
+        self._tab_widget.setStyleSheet(
+            f"QTabBar::tab {{ padding:6px 20px; font-size:12px; }}"
+            f"QTabBar::tab:selected {{ color:{C_HIGHLIGHT}; font-weight:bold; }}"
         )
-        body = QWidget()
-        body_lyt = QVBoxLayout(body)
-        body_lyt.setContentsMargins(32, 8, 32, 24)
-        body_lyt.setSpacing(12)
-        scroll.setWidget(body)
-        root.addWidget(scroll)
+        self._tab_widget.setSizePolicy(
+            self._tab_widget.sizePolicy().horizontalPolicy(),
+            QSizePolicy.Policy.Preferred,
+        )
+        self._tab_widget.addTab(self._build_remotion_tab(), "🎬  Remotion")
+        self._tab_widget.addTab(self._build_hf_tab(),       "⚡  HyperFrames")
+        page_layout.addWidget(self._tab_widget)
+        page_layout.addStretch()
 
-        # 이하 모든 STEP A~D 위젯은 body_lyt 에 추가
-        # (가독성을 위해 root → body_lyt 변수명은 동일하게 유지)
-        root = body_lyt  # noqa: F841  (섀도잉 의도적)
+        outer_scroll.setWidget(page)
+        root.addWidget(outer_scroll)
+
+    # ── Remotion 탭 ──────────────────────────────────────────────────────
+
+    def _build_remotion_tab(self) -> QWidget:
+        body = QWidget()
+        root = QVBoxLayout(body)
+        root.setContentsMargins(32, 8, 32, 24)
+        root.setSpacing(12)
 
         root.addWidget(make_divider())
 
@@ -340,13 +1125,10 @@ class Step4Widget(QWidget):
         row_a.addStretch()
         root.addLayout(row_a)
 
-        # 파일명 정규화 안내
         plan_hint = QLabel(
             "※ 업로드 시 파일명에 상관없이 remotion_plan.json 으로 자동 변환되어 저장됩니다."
         )
-        plan_hint.setStyleSheet(
-            f"color:{C_HIGHLIGHT}; font-size:11px;"
-        )
+        plan_hint.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:11px;")
         plan_hint.setWordWrap(True)
         root.addWidget(plan_hint)
 
@@ -356,9 +1138,7 @@ class Step4Widget(QWidget):
         # STEP B: Remotion 제어
         # ─────────────────────────────────────────────────
         lbl_b = QLabel("[ STEP B ]  Remotion 렌더링 / VIVID Studio")
-        lbl_b.setStyleSheet(
-            f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;"
-        )
+        lbl_b.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;")
         root.addWidget(lbl_b)
 
         row_b = QHBoxLayout()
@@ -366,17 +1146,13 @@ class Step4Widget(QWidget):
 
         self._render_btn = QPushButton("🎬  Remotion 투명 렌더링")
         self._render_btn.setEnabled(False)
-        self._render_btn.setToolTip(
-            "배경 투명 .webm 파일 생성 (변경된 FX만 재렌더링 — Diff Check)"
-        )
+        self._render_btn.setToolTip("배경 투명 .webm 파일 생성 (변경된 FX만 재렌더링 — Diff Check)")
         self._render_btn.clicked.connect(self._on_render_click)
         row_b.addWidget(self._render_btn)
 
         self._studio_btn = QPushButton("▶🖊  미리보기 + VIVID Studio")
         self._studio_btn.setEnabled(False)
-        self._studio_btn.setToolTip(
-            "Custom FX 매칭 → Remotion Studio(미리보기) + VIVID Studio(편집) 동시 실행"
-        )
+        self._studio_btn.setToolTip("Custom FX 매칭 → Remotion Studio(미리보기) + VIVID Studio(편집) 동시 실행")
         self._studio_btn.clicked.connect(self._on_vivid_studio_click)
         row_b.addWidget(self._studio_btn)
 
@@ -388,7 +1164,6 @@ class Step4Widget(QWidget):
         row_b.addStretch()
         root.addLayout(row_b)
 
-        # 진행 바
         self._progress = QProgressBar()
         self._progress.setVisible(False)
         self._progress.setTextVisible(True)
@@ -405,9 +1180,7 @@ class Step4Widget(QWidget):
         # STEP C: Vrew 조립
         # ─────────────────────────────────────────────────
         lbl_c = QLabel("[ STEP C ]  최종 Vrew 파일 생성")
-        lbl_c.setStyleSheet(
-            f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;"
-        )
+        lbl_c.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;")
         root.addWidget(lbl_c)
 
         row_c = QHBoxLayout()
@@ -432,12 +1205,9 @@ class Step4Widget(QWidget):
         # STEP D: AI 기획 지시문 생성 (Google OAuth)
         # ─────────────────────────────────────────────────
         lbl_d = QLabel("[ STEP D ]  AI 기획 지시문 생성")
-        lbl_d.setStyleSheet(
-            f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;"
-        )
+        lbl_d.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;")
         root.addWidget(lbl_d)
 
-        # OAuth 인증 상태 표시 (앱 시작 시점 기준 — 변경 시 재시작 필요)
         _oauth_active = (ROOT_DIR / "client_secret.json").exists()
         oauth_info = QLabel(
             "🔐  Google OAuth 인증 모드  (client_secret.json 감지됨)"
@@ -452,7 +1222,6 @@ class Step4Widget(QWidget):
 
         directive_row = QHBoxLayout()
         directive_row.setSpacing(10)
-
         self._directive_btn = QPushButton("✨  기획 지시문 생성 및 클립보드 복사")
         self._directive_btn.setToolTip(
             "2단계에서 생성된 script_body_slide.txt를 Gemini에 전송하여\n"
@@ -465,9 +1234,6 @@ class Step4Widget(QWidget):
 
         root.addWidget(make_divider())
 
-        # ─────────────────────────────────────────────────
-        # 내비게이션
-        # ─────────────────────────────────────────────────
         nav = QHBoxLayout()
         back_btn = QPushButton("◀  BACK")
         back_btn.clicked.connect(lambda: self._stack.setCurrentIndex(2))
@@ -475,6 +1241,175 @@ class Step4Widget(QWidget):
         nav.addStretch()
         root.addLayout(nav)
         root.addStretch()
+
+        return body
+
+    # ── HyperFrames 탭 ───────────────────────────────────────────────────
+
+    def _build_hf_tab(self) -> QWidget:
+        body = QWidget()
+        root = QVBoxLayout(body)
+        root.setContentsMargins(32, 8, 32, 24)
+        root.setSpacing(12)
+
+        root.addWidget(make_divider())
+
+        # ─────────────────────────────────────────────────
+        # STEP HF-A: n8n 기획안 자동 생성
+        # ─────────────────────────────────────────────────
+        lbl_n8n = QLabel("[ STEP A ]  n8n 기획안 자동 생성")
+        lbl_n8n.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;")
+        root.addWidget(lbl_n8n)
+
+        row_n8n = QHBoxLayout()
+        row_n8n.setSpacing(10)
+        self._hf_n8n_btn = QPushButton("🚀  기획안 생성 (n8n 파이프라인)")
+        self._hf_n8n_btn.setToolTip(
+            "n8n HyperFrames 파이프라인을 실행합니다.\n"
+            "완료 후 생성된 hyperframes_compositions.json을 STEP B에서 업로드하세요."
+        )
+        self._hf_n8n_btn.clicked.connect(self._trigger_n8n)
+        row_n8n.addWidget(self._hf_n8n_btn)
+        row_n8n.addStretch()
+        root.addLayout(row_n8n)
+
+        n8n_hint = QLabel(
+            "※ n8n이 실행 중이어야 합니다 (n8n start). "
+            "완료 후 asset/hyperframes_compositions.json이 저장되면 STEP B로 업로드하세요."
+        )
+        n8n_hint.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:11px;")
+        n8n_hint.setWordWrap(True)
+        root.addWidget(n8n_hint)
+
+        root.addWidget(make_divider())
+
+        # ─────────────────────────────────────────────────
+        # STEP HF-B: Opal 기획안 업로드
+        # ─────────────────────────────────────────────────
+        lbl_a = QLabel("[ STEP B ]  Opal 기획안 업로드 (hyperframes_compositions.json)")
+        lbl_a.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;")
+        root.addWidget(lbl_a)
+
+        self._hf_drop_zone = DropZone(
+            label="hyperframes_compositions.json 파일을 여기에 끌어다 놓으세요\n(또는 아래 버튼으로 선택)",
+            accepted_ext=".json",
+        )
+        self._hf_drop_zone.file_dropped.connect(self._on_hf_plan_received)
+        root.addWidget(self._hf_drop_zone)
+
+        row_ha = QHBoxLayout()
+        row_ha.setSpacing(10)
+        self._hf_upload_btn = QPushButton("📁  기획안 업로드")
+        self._hf_upload_btn.clicked.connect(self._on_hf_upload_click)
+        row_ha.addWidget(self._hf_upload_btn)
+        row_ha.addStretch()
+        root.addLayout(row_ha)
+
+        hf_hint = QLabel(
+            "※ 업로드 시 파일명에 상관없이 hyperframes_compositions.json 으로 자동 변환됩니다."
+        )
+        hf_hint.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:11px;")
+        hf_hint.setWordWrap(True)
+        root.addWidget(hf_hint)
+
+        # lint 결과 + 오류 수정 버튼 (E-18/E-19)
+        self._hf_lint_lbl = QLabel("")
+        self._hf_lint_lbl.setWordWrap(True)
+        self._hf_lint_lbl.setVisible(False)
+        root.addWidget(self._hf_lint_lbl)
+
+        row_fix = QHBoxLayout()
+        self._hf_fix_btn = QPushButton("⚡  Gemini CLI로 오류 수정")
+        self._hf_fix_btn.setVisible(False)
+        self._hf_fix_btn.clicked.connect(self._on_hf_fix_click)
+        row_fix.addWidget(self._hf_fix_btn)
+        row_fix.addStretch()
+        root.addLayout(row_fix)
+
+        root.addWidget(make_divider())
+
+        # ─────────────────────────────────────────────────
+        # STEP HF-B: 미리보기 / 편집
+        # ─────────────────────────────────────────────────
+        lbl_b_edit = QLabel("[ STEP C ]  슬라이드 미리보기 및 편집")
+        lbl_b_edit.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;")
+        root.addWidget(lbl_b_edit)
+
+        self._hf_editor = HfEditorPanel()
+        root.addWidget(self._hf_editor)
+
+        root.addWidget(make_divider())
+
+        # ─────────────────────────────────────────────────
+        # STEP HF-C: 렌더링
+        # ─────────────────────────────────────────────────
+        lbl_b = QLabel("[ STEP D ]  HyperFrames 슬라이드 렌더링")
+        lbl_b.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;")
+        root.addWidget(lbl_b)
+
+        row_hb = QHBoxLayout()
+        row_hb.setSpacing(10)
+
+        self._hf_render_btn = QPushButton("🎬  HyperFrames 렌더링")
+        self._hf_render_btn.setEnabled(False)
+        self._hf_render_btn.setToolTip("슬라이드별 .mp4 렌더링 (delta 편집 내역 자동 적용)")
+        self._hf_render_btn.clicked.connect(self._on_hf_render_click)
+        row_hb.addWidget(self._hf_render_btn)
+
+        self._hf_abort_btn = QPushButton("⏹  중단")
+        self._hf_abort_btn.setEnabled(False)
+        self._hf_abort_btn.clicked.connect(self._on_hf_abort_click)
+        row_hb.addWidget(self._hf_abort_btn)
+
+        row_hb.addStretch()
+        root.addLayout(row_hb)
+
+        self._hf_progress = QProgressBar()
+        self._hf_progress.setVisible(False)
+        self._hf_progress.setTextVisible(True)
+        self._hf_progress.setStyleSheet(
+            f"QProgressBar {{ background:{C_BG_INPUT}; border:1px solid {C_BORDER};"
+            f"border-radius:4px; height:18px; }}"
+            f"QProgressBar::chunk {{ background:{C_SUCCESS}; border-radius:3px; }}"
+        )
+        root.addWidget(self._hf_progress)
+
+        root.addWidget(make_divider())
+
+        # ─────────────────────────────────────────────────
+        # STEP HF-C: Vrew 조립
+        # ─────────────────────────────────────────────────
+        lbl_c = QLabel("[ STEP E ]  최종 Vrew 파일 생성")
+        lbl_c.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;")
+        root.addWidget(lbl_c)
+
+        row_hc = QHBoxLayout()
+        row_hc.setSpacing(10)
+
+        self._hf_vrew_btn = QPushButton("📦  최종 Vrew 파일 생성")
+        self._hf_vrew_btn.setEnabled(False)
+        self._hf_vrew_btn.clicked.connect(self._on_hf_vrew_click)
+        row_hc.addWidget(self._hf_vrew_btn)
+
+        self._hf_open_btn = QPushButton("🎞  Vrew 열기")
+        self._hf_open_btn.setEnabled(False)
+        self._hf_open_btn.clicked.connect(self._on_hf_open_vrew)
+        row_hc.addWidget(self._hf_open_btn)
+
+        row_hc.addStretch()
+        root.addLayout(row_hc)
+
+        root.addWidget(make_divider())
+
+        nav = QHBoxLayout()
+        back_btn = QPushButton("◀  BACK")
+        back_btn.clicked.connect(lambda: self._stack.setCurrentIndex(2))
+        nav.addWidget(back_btn)
+        nav.addStretch()
+        root.addLayout(nav)
+        root.addStretch()
+
+        return body
 
     # ── 외부 주입 ─────────────────────────────────────────────────────────
 
@@ -496,6 +1431,7 @@ class Step4Widget(QWidget):
             self._vite_proc.terminate()
         self._vite_proc = None
 
+        # ── Remotion UI 초기화 ──
         self._drop_zone.reset()
         self._log.clear()
         self._render_btn.setEnabled(False)
@@ -504,9 +1440,23 @@ class Step4Widget(QWidget):
         self._open_btn.setEnabled(False)
         self._progress.setVisible(False)
 
+        # ── HyperFrames UI 초기화 ──
+        self._hf_compositions = None
+        self._hf_latest_vrew  = None
+        self._hf_drop_zone.reset()
+        self._hf_lint_lbl.setVisible(False)
+        self._hf_fix_btn.setVisible(False)
+        self._hf_render_btn.setEnabled(False)
+        self._hf_abort_btn.setEnabled(False)
+        self._hf_vrew_btn.setEnabled(False)
+        self._hf_open_btn.setEnabled(False)
+        self._hf_progress.setVisible(False)
+        self._hf_editor.unload()
+
         if path:
             self._log.highlight(f"프로젝트: {path.name}")
-            # ── 기존 파일 복원 ──────────────────────────────────
+
+            # ── Remotion 기존 파일 복원 ──────────────────────────────────
             plan = path / "asset" / "remotion_plan.json"
             if plan.exists():
                 try:
@@ -526,6 +1476,23 @@ class Step4Widget(QWidget):
                     "제미나이(웹)에 storyboard.pdf와 fx_catalog.txt를 참고하여 만든\n"
                     "영상 기획안(remotion_plan.json)을 업로드 하세요."
                 )
+
+            # ── HyperFrames 기존 파일 복원 ───────────────────────────────
+            hf_json = path / "asset" / "hyperframes_compositions.json"
+            if hf_json.exists():
+                try:
+                    data = json.loads(hf_json.read_text(encoding="utf-8"))
+                    ok, _, _ = _lint_hf_json(data)
+                    if ok:
+                        self._hf_compositions = data
+                        self._hf_drop_zone.set_ready("hyperframes_compositions.json")
+                        self._hf_render_btn.setEnabled(True)
+                        self._log.info(f"HyperFrames 기획안 복원됨  ·  슬라이드 {len(data)}장")
+                        comps_dir = path / "hyperframes" / "compositions"
+                        if comps_dir.exists():
+                            self._hf_editor.load_compositions(comps_dir, sorted(data.keys()))
+                except Exception:
+                    pass
 
     # ── §A: 기획안 업로드 ────────────────────────────────────────────────
 
@@ -1269,12 +2236,330 @@ class Step4Widget(QWidget):
         self._directive_btn.setEnabled(True)
         self._log.error(f"기획 지시문 생성 실패:\n{msg}")
 
+    # ── §HF-0: n8n 기획안 자동 생성 ──────────────────────────────────────
+
+    def _trigger_n8n(self):
+        if self._project_dir is None:
+            self._log.error("프로젝트 폴더가 없습니다. 1단계로 돌아가세요.")
+            return
+
+        if self._n8n_thread and self._n8n_thread.isRunning():
+            self._log.warning("n8n 파이프라인이 이미 실행 중입니다.")
+            return
+
+        timeline_path = self._project_dir / "asset" / "base_timeline.json"
+        slide_count = 0
+        if timeline_path.exists():
+            try:
+                data = json.loads(timeline_path.read_text(encoding="utf-8"))
+                slide_count = len(data)
+            except Exception:
+                pass
+
+        self._hf_n8n_btn.setEnabled(False)
+        self._log.info("n8n 상태 확인 중...")
+
+        self._n8n_worker = N8nLaunchWorker(str(self._project_dir), slide_count)
+        self._n8n_thread = QThread()
+        self._n8n_worker.moveToThread(self._n8n_thread)
+        self._n8n_thread.started.connect(self._n8n_worker.run)
+        self._n8n_worker.status.connect(self._log.info)
+        self._n8n_worker.finished.connect(self._on_n8n_done)
+        self._n8n_worker.error.connect(self._on_n8n_error)
+        self._n8n_worker.finished.connect(self._n8n_thread.quit)
+        self._n8n_worker.error.connect(self._n8n_thread.quit)
+        self._n8n_thread.finished.connect(lambda: self._hf_n8n_btn.setEnabled(True))
+        self._n8n_thread.start()
+
+    def _on_n8n_done(self, msg: str):
+        self._log.success(msg)
+
+    def _on_n8n_error(self, msg: str):
+        self._log.error(msg)
+
+    # ── §HF-A: Opal 기획안 업로드 ────────────────────────────────────────
+
+    def _on_hf_upload_click(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Opal 기획안 파일 선택", str(Path.home()), "JSON 파일 (*.json)"
+        )
+        if path:
+            self._on_hf_plan_received(path)
+
+    def _on_hf_plan_received(self, src_path: str):
+        src = Path(src_path)
+
+        if src.suffix.lower() != ".json":
+            self._log.error(f"'{src.name}'은(는) .json 파일이 아닙니다.")
+            return
+        if src.stat().st_size == 0:
+            self._log.error(f"'{src.name}' 파일이 비어 있습니다 (0바이트).")
+            return
+        if self._project_dir is None:
+            self._log.error("프로젝트 폴더가 없습니다. 1단계로 돌아가세요.")
+            return
+
+        # 파일명 정규화 저장
+        asset_dir = self._project_dir / "asset"
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        dest = asset_dir / "hyperframes_compositions.json"
+        try:
+            if src.resolve() != dest.resolve():
+                shutil.copy2(str(src), str(dest))
+        except Exception as e:
+            self._log.error(f"파일 저장 오류:\n{e}")
+            return
+
+        if src.name != "hyperframes_compositions.json":
+            self._log.info(f"파일명 정규화: '{src.name}'  →  'hyperframes_compositions.json'")
+
+        # JSON 파싱
+        try:
+            data = json.loads(dest.read_text(encoding="utf-8"))
+        except Exception as e:
+            self._log.error(f"JSON 파싱 실패: {e}")
+            self._hf_drop_zone.set_error("JSON 파싱 실패")
+            return
+
+        # Lint (E-18)
+        ok, severity, detail = _lint_hf_json(data)
+
+        if ok:
+            self._hf_compositions = data
+            self._hf_drop_zone.set_ready("hyperframes_compositions.json")
+            self._hf_lint_lbl.setVisible(False)
+            self._hf_fix_btn.setVisible(False)
+            self._hf_render_btn.setEnabled(True)
+            self._log.success(f"기획안 파일 확인 완료  ·  슬라이드 {len(data)}장")
+            self._save_hf_slides(data)
+
+        elif severity == "severe":
+            self._hf_drop_zone.set_error("중대한 오류 — Opal에서 재생성 필요")
+            self._hf_lint_lbl.setText(f"❌  중대한 오류\n{detail}\n\n→ Opal에서 기획안을 재생성해 주세요.")
+            self._hf_lint_lbl.setStyleSheet(f"color:{C_ERROR}; font-size:11px;")
+            self._hf_lint_lbl.setVisible(True)
+            self._hf_fix_btn.setVisible(False)
+            self._hf_render_btn.setEnabled(False)
+            self._log.error(f"중대한 오류 — {detail}")
+
+        else:  # light
+            self._hf_compositions = data
+            self._hf_drop_zone.set_ready("hyperframes_compositions.json (오류 있음)")
+            self._hf_lint_lbl.setText(f"⚠️  가벼운 오류 감지\n{detail}\n\nGemini CLI로 수정하거나 그대로 렌더링을 진행할 수 있습니다.")
+            self._hf_lint_lbl.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:11px;")
+            self._hf_lint_lbl.setVisible(True)
+            self._hf_fix_btn.setVisible(True)
+            self._hf_render_btn.setEnabled(True)
+            self._log.warning(f"가벼운 오류 — {detail}")
+            self._save_hf_slides(data)
+
+    def _save_hf_slides(self, data: dict):
+        """JSON의 각 슬라이드 HTML을 hyperframes/compositions/에 저장."""
+        if self._project_dir is None:
+            return
+        compositions_dir = self._project_dir / "hyperframes" / "compositions"
+        compositions_dir.mkdir(parents=True, exist_ok=True)
+        for slide_key in sorted(data):
+            try:
+                (compositions_dir / f"{slide_key}.html").write_text(
+                    data[slide_key], encoding="utf-8"
+                )
+            except Exception as e:
+                self._log.error(f"{slide_key}.html 저장 실패: {e}")
+
+        slide_keys = sorted(data.keys())
+        self._hf_editor.load_compositions(compositions_dir, slide_keys)
+
+    # ── §HF-A: E-19 오류 수정 (Gemini CLI) ──────────────────────────────
+
+    def _on_hf_fix_click(self):
+        """가벼운 오류 → Gemini CLI로 자동 수정 요청."""
+        if self._project_dir is None:
+            return
+        json_path = self._project_dir / "asset" / "hyperframes_compositions.json"
+        prompt = (
+            f"파일 경로: {json_path}\n"
+            "위 hyperframes_compositions.json의 각 슬라이드 값이 완전한 "
+            "<!DOCTYPE html> 독립 HTML 문서가 되도록 가벼운 오류만 수정해줘. "
+            "JSON 구조(키: slide_NN, 값: HTML 문자열)는 반드시 유지."
+        )
+        try:
+            from utils.step4_workers import _find_gemini_exe
+            gemini_cmd = _find_gemini_exe()
+        except Exception as e:
+            self._log.error(f"Gemini CLI를 찾을 수 없습니다: {e}")
+            return
+
+        self._hf_fix_btn.setEnabled(False)
+        self._log.info("Gemini CLI로 오류 수정 중...")
+
+        def _fix():
+            try:
+                r = subprocess.run(
+                    [gemini_cmd, "--yolo", "-p", prompt],
+                    capture_output=True, text=True, timeout=120,
+                    cwd=str(self._project_dir),
+                )
+                if r.returncode == 0:
+                    QTimer.singleShot(0, self._reload_hf_after_fix)
+                else:
+                    self._log.error(f"Gemini 수정 실패:\n{r.stderr[:300]}")
+                    QTimer.singleShot(0, lambda: self._hf_fix_btn.setEnabled(True))
+            except Exception as e:
+                self._log.error(f"Gemini 실행 오류: {e}")
+                QTimer.singleShot(0, lambda: self._hf_fix_btn.setEnabled(True))
+
+        threading.Thread(target=_fix, daemon=True).start()
+
+    def _reload_hf_after_fix(self):
+        json_path = self._project_dir / "asset" / "hyperframes_compositions.json"
+        if json_path.exists():
+            self._on_hf_plan_received(str(json_path))
+            self._log.success("Gemini 수정 완료 — 기획안을 재검증했습니다.")
+        self._hf_fix_btn.setEnabled(True)
+
+    # ── §HF-B: 렌더링 ────────────────────────────────────────────────────
+
+    def _on_hf_render_click(self):
+        if self._project_dir is None or self._hf_compositions is None:
+            return
+
+        compositions_dir = self._project_dir / "hyperframes" / "compositions"
+        output_dir       = self._project_dir / "output" / "hyperframes"
+        hf_dir           = self._project_dir / "hyperframes"
+
+        if not (hf_dir / "node_modules").exists():
+            self._log.error(
+                "HyperFrames node_modules가 없습니다.\n"
+                "Health Check에서 npm install을 먼저 실행해주세요."
+            )
+            return
+
+        self._hf_render_btn.setEnabled(False)
+        self._hf_abort_btn.setEnabled(True)
+        self._hf_progress.setRange(0, len(self._hf_compositions))
+        self._hf_progress.setValue(0)
+        self._hf_progress.setVisible(True)
+        self._hf_render_start_time = time.time()
+        self._log.info(f"HyperFrames 렌더링 시작 — 슬라이드 {len(self._hf_compositions)}장")
+
+        from utils.step4_workers import HFRenderWorker
+        self._hf_render_worker = HFRenderWorker(compositions_dir, output_dir, hf_dir)
+        self._hf_render_thread = QThread(self)
+        self._hf_render_worker.moveToThread(self._hf_render_thread)
+
+        self._hf_render_thread.started.connect(self._hf_render_worker.run)
+        self._hf_render_worker.progress.connect(self._on_hf_render_progress)
+        self._hf_render_worker.finished.connect(self._on_hf_render_done)
+        self._hf_render_worker.error.connect(self._on_hf_render_error)
+        self._hf_render_worker.finished.connect(self._hf_render_thread.quit)
+        self._hf_render_worker.error.connect(self._hf_render_thread.quit)
+
+        self._hf_render_thread.start()
+
+    def _on_hf_render_progress(self, current: int, total: int, name: str):
+        self._hf_progress.setValue(current)
+        self._hf_progress.setFormat(f"렌더 중: {name}  ({current}/{total})")
+        self._log.info(f"[{current}/{total}]  {name} 렌더링 중...")
+
+    def _on_hf_render_done(self, result: object):
+        elapsed  = time.time() - (self._hf_render_start_time or time.time())
+        rendered = result.get("rendered", [])   # type: ignore[union-attr]
+        failed   = result.get("failed",   [])   # type: ignore[union-attr]
+
+        self._hf_abort_btn.setEnabled(False)
+        self._hf_progress.setVisible(False)
+        self._hf_render_btn.setEnabled(True)
+
+        if failed:
+            self._log.error(f"렌더 실패 슬라이드 ({len(failed)}개): {', '.join(failed)}")
+
+        if rendered:
+            self._log.highlight(
+                f"HyperFrames 렌더링 완료 — {elapsed:.1f}초\n"
+                f"성공: {len(rendered)}장  /  실패: {len(failed)}장"
+            )
+            self._hf_vrew_btn.setEnabled(True)
+        else:
+            self._log.error("렌더링된 슬라이드가 없습니다.")
+
+    def _on_hf_render_error(self, msg: str):
+        self._hf_abort_btn.setEnabled(False)
+        self._hf_progress.setVisible(False)
+        self._hf_render_btn.setEnabled(True)
+        self._log.error(f"렌더링 오류:\n{msg}")
+
+    def _on_hf_abort_click(self):
+        self._hf_abort_btn.setEnabled(False)
+        self._log.info("렌더링 중단 요청... (현재 슬라이드 완료 후 정지)")
+
+    # ── §HF-C: Vrew 조립 ─────────────────────────────────────────────────
+
+    def _on_hf_vrew_click(self):
+        if self._project_dir is None:
+            return
+
+        asset_dir   = self._project_dir / "asset"
+        renders_dir = self._project_dir / "output" / "hyperframes"
+        tl_path     = self._project_dir / "asset" / "base_timeline.json"
+
+        try:
+            timeline = json.loads(tl_path.read_text(encoding="utf-8")) if tl_path.exists() else []
+        except Exception:
+            timeline = []
+
+        self._hf_vrew_btn.setEnabled(False)
+        self._log.info("HyperFrames Vrew 조립 중...")
+
+        from utils.step4_workers import HFVrewWorker
+        self._hf_vrew_worker = HFVrewWorker(asset_dir, timeline, renders_dir)
+        self._hf_vrew_thread = QThread(self)
+        self._hf_vrew_worker.moveToThread(self._hf_vrew_thread)
+
+        self._hf_vrew_thread.started.connect(self._hf_vrew_worker.run)
+        self._hf_vrew_worker.finished.connect(self._on_hf_vrew_done)
+        self._hf_vrew_worker.error.connect(self._on_hf_vrew_error)
+        self._hf_vrew_worker.finished.connect(self._hf_vrew_thread.quit)
+        self._hf_vrew_worker.error.connect(self._hf_vrew_thread.quit)
+
+        self._hf_vrew_thread.start()
+
+    def _on_hf_vrew_done(self, path_str: str):
+        self._hf_latest_vrew = Path(path_str)
+        self._hf_vrew_btn.setEnabled(True)
+        self._hf_open_btn.setEnabled(True)
+        self._log.success(f"HyperFrames Vrew 생성 완료: {Path(path_str).name}")
+
+    def _on_hf_vrew_error(self, msg: str):
+        self._hf_vrew_btn.setEnabled(True)
+        self._log.error(f"Vrew 조립 오류:\n{msg}")
+
+    def _on_hf_open_vrew(self):
+        if self._hf_latest_vrew is None or not self._hf_latest_vrew.exists():
+            self._log.error("열 수 있는 Vrew 파일이 없습니다.")
+            return
+        try:
+            if sys.platform == "win32":
+                import os
+                os.startfile(str(self._hf_latest_vrew))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(self._hf_latest_vrew)])
+            else:
+                subprocess.Popen(["xdg-open", str(self._hf_latest_vrew)])
+            self._log.success(f"Vrew 실행 요청: {self._hf_latest_vrew.name}")
+        except Exception as e:
+            self._log.error(f"Vrew 열기 실패:\n{e}")
+
     # ── 정리 ─────────────────────────────────────────────────────────────
 
     def closeEvent(self, event):
         if self._render_worker:
             self._render_worker.abort()
-        for t in (self._render_thread, self._vrew_thread, self._gemini_thread, self._match_thread):
+        for t in (
+            self._render_thread, self._vrew_thread,
+            self._gemini_thread, self._match_thread,
+            self._hf_render_thread, self._hf_vrew_thread,
+        ):
             if t and t.isRunning():
                 t.quit()
                 t.wait(2000)

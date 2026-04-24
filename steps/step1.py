@@ -35,18 +35,21 @@ def detect_stage(project_dir: Path) -> int:
       2단계: input/script_body_slide.txt 존재
       1단계: 그 외 (방금 생성된 프로젝트)
     """
-    if (project_dir / "asset" / "remotion_plan.json").exists():
+    if (project_dir / "asset" / "remotion_plan.json").exists() or \
+       (project_dir / "asset" / "hyperframes_compositions.json").exists():
         return 3   # 4단계로 이동
     if (project_dir / "asset" / "base_timeline.json").exists():
         return 2   # 3단계로 이동 (타임라인까지 완료 → 3단계 화면)
-    if (project_dir / "input" / "script_body_slide.txt").exists():
+    if (project_dir / "asset" / "script_body_slide.txt").exists():
         return 1   # 2단계로 이동 (대본 변환 완료 → 2단계 화면)
     return 0       # 1단계 유지 (NEXT 활성화만)
 
 
 def is_valid_project(folder: Path) -> bool:
-    """Vivid 프로젝트 폴더인지 확인 (remotion/package.json 존재 여부)"""
-    return (folder / "remotion" / "package.json").exists()
+    """Vivid 프로젝트 폴더인지 확인 (remotion 또는 hyperframes package.json 존재)"""
+    has_remotion    = (folder / "remotion"    / "package.json").exists()
+    has_hyperframes = (folder / "hyperframes" / "package.json").exists()
+    return has_remotion or has_hyperframes
 
 
 class Step1Widget(QWidget):
@@ -165,8 +168,9 @@ class Step1Widget(QWidget):
             self._log.error(f"폴더 생성 중 오류:\n{e}")
             return
 
-        # 글로벌 FX 심볼릭 링크 구축
-        self._setup_fx_symlink(target)
+        # 글로벌 FX 심볼릭 링크 구축 (Remotion 프로젝트에만 적용)
+        if (target / "remotion" / "package.json").exists():
+            self._setup_fx_symlink(target)
 
         self._project_dir = target
         self._log.success(
@@ -195,7 +199,7 @@ class Step1Widget(QWidget):
         if not is_valid_project(project_dir):
             self._log.error(
                 f"'{project_dir.name}' 은 유효한 Vivid 프로젝트 폴더가 아닙니다.\n"
-                "remotion/package.json 파일이 있는 폴더를 선택하세요."
+                "remotion/package.json 또는 hyperframes/package.json 파일이 있는 폴더를 선택하세요."
             )
             return
 

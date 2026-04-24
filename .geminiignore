@@ -1,0 +1,12 @@
+# gemini CLI용 ignore — .gitignore의 미디어 바이너리 제외를 이미지만 해제
+# 대용량 바이너리는 여전히 제외
+*.mp4
+*.mp3
+*.wav
+*.webm
+
+# 이미지는 멀티모달 분석용으로 허용
+!*.jpeg
+!*.jpg
+!*.png
+!*.webp

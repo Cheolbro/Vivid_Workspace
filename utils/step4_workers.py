@@ -469,3 +469,162 @@ class SemanticMatchWorker(QObject):
 
         except Exception as e:
             self.error.emit(f"시맨틱 매칭 오류: {e}")
+
+
+# ══════════════════════════════════════════════
+# HFRenderWorker  (QThread — HyperFrames 슬라이드 렌더)
+# ══════════════════════════════════════════════
+
+class HFRenderWorker(QObject):
+    """HyperFrames 슬라이드 일괄 렌더 워커."""
+    progress = Signal(int, int, str)   # (current, total, slide_name)
+    finished = Signal(object)          # {"rendered": [...], "failed": [...]}
+    error    = Signal(str)
+
+    def __init__(
+        self,
+        compositions_dir: Path,
+        output_dir: Path,
+        hf_dir: Path,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._compositions = compositions_dir
+        self._output       = output_dir
+        self._hf_dir       = hf_dir
+
+    def run(self):
+        try:
+            from utils.hf_renderer import render_all_slides
+            result = render_all_slides(
+                self._compositions,
+                self._output,
+                self._hf_dir,
+                progress_cb=lambda c, t, n: self.progress.emit(c, t, n),
+            )
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+# ══════════════════════════════════════════════
+# HFVrewWorker  (QThread — HyperFrames Vrew 조립)
+# ══════════════════════════════════════════════
+
+class HFVrewWorker(QObject):
+    """HyperFrames .mp4 슬라이드 → Vrew 조립 워커."""
+    finished = Signal(str)   # 출력 .vrew 경로
+    error    = Signal(str)
+
+    def __init__(
+        self,
+        asset_dir: Path,
+        timeline: list,
+        renders_dir: Path,
+        fps: int = 30,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._asset    = asset_dir
+        self._timeline = timeline
+        self._renders  = renders_dir
+        self._fps      = fps
+
+    def run(self):
+        try:
+            from utils.backend_ext import assemble_vrew_hf
+            out = assemble_vrew_hf(self._asset, self._timeline, self._renders, self._fps)
+            self.finished.emit(str(out))
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+# ══════════════════════════════════════════════
+# N8nLaunchWorker  (QObject — n8n 자동 기동 + 웹훅 트리거)
+# ══════════════════════════════════════════════
+
+class N8nLaunchWorker(QObject):
+    """
+    n8n이 미실행 상태이면 자동 시작 후 hyperframes 웹훅을 호출한다.
+    이미 실행 중이면 즉시 웹훅만 호출.
+    """
+    status   = Signal(str)   # 중간 상태 메시지
+    finished = Signal(str)   # 성공 메시지
+    error    = Signal(str)   # 실패 메시지
+
+    _N8N_URL  = "http://localhost:5678"
+    _HOOK_URL = "http://localhost:5678/webhook/hyperframes"
+    _BOOT_TIMEOUT = 90   # 초
+
+    def __init__(self, project_path: str, slide_count: int, parent=None):
+        super().__init__(parent)
+        self._project_path = project_path
+        self._slide_count  = slide_count
+
+    def run(self):
+        import os, requests
+
+        # ── 이미 실행 중인지 확인 ────────────────────────────────────────
+        running = self._ping()
+        if not running:
+            self.status.emit("n8n을 자동으로 시작합니다...")
+            env = os.environ.copy()
+            env["NODE_FUNCTION_ALLOW_BUILTIN"] = "*"
+            env["NODE_FUNCTION_ALLOW_EXTERNAL"] = "*"
+
+            n8n_cmd = shutil.which("n8n") or "n8n"
+            try:
+                subprocess.Popen(
+                    [n8n_cmd, "start"],
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                )
+            except FileNotFoundError:
+                self.error.emit("n8n을 찾을 수 없습니다. 'npm install -g n8n'으로 설치하세요.")
+                return
+
+            # ── 기동 대기 ────────────────────────────────────────────────
+            for elapsed in range(self._BOOT_TIMEOUT):
+                time.sleep(1)
+                if self._ping():
+                    break
+                if elapsed % 10 == 9:
+                    self.status.emit(f"n8n 기동 중... ({elapsed + 1}초)")
+            else:
+                self.error.emit(
+                    f"n8n이 {self._BOOT_TIMEOUT}초 내에 기동되지 않았습니다. "
+                    "수동으로 'n8n start'를 실행하세요."
+                )
+                return
+
+            # 워크플로우 활성화까지 대기 (포트 오픈 후에도 DB 인덱싱 필요)
+            self.status.emit("n8n 워크플로우 활성화 대기 중...")
+            time.sleep(8)
+
+        # ── 웹훅 호출 (Gemini 파이프라인은 수 분 소요 → timeout=None) ────
+        self.status.emit("n8n 파이프라인 트리거 중... (Gemini 분석 중, 수 분 소요)")
+        try:
+            resp = requests.post(
+                self._HOOK_URL,
+                json={"project_path": self._project_path, "slide_count": self._slide_count},
+                timeout=None,   # 파이프라인 완료까지 무제한 대기
+            )
+            if resp.status_code == 200:
+                self.finished.emit(
+                    "n8n 파이프라인 완료. "
+                    "STEP B에서 hyperframes_compositions.json을 업로드하세요."
+                )
+            else:
+                self.error.emit(f"n8n 응답 오류: {resp.status_code} — {resp.text[:200]}")
+        except Exception as e:
+            self.error.emit(f"n8n 호출 오류: {e}")
+
+    def _ping(self) -> bool:
+        try:
+            import requests
+            requests.get(self._N8N_URL, timeout=2)
+            return True
+        except Exception:
+            return False

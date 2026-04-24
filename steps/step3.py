@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStackedWidget, QFileDialog,
     QDialog, QTabWidget, QSpinBox, QComboBox,
-    QListWidget, QListWidgetItem, QFrame, QApplication,
+    QListWidget, QFrame,
 )
 
 from utils.theme import (
@@ -986,15 +986,19 @@ class Step3Widget(QWidget):
 
         asset_dir = self._project_dir / "asset"
         asset_dir.mkdir(parents=True, exist_ok=True)
+        input_dir = self._project_dir / "input"
+        input_dir.mkdir(parents=True, exist_ok=True)
 
         # 표준화된 저장 이름 결정 (파일명에 상관없이 표준명으로 정규화)
+        # .txt(intro_cue)는 사용자 원본이므로 input/ 저장, 나머지 제작 에셋은 asset/ 저장
         name_map = {
-            ".vrew": "원본.vrew",
-            ".mp3":  "TTS.mp3",
-            ".srt":  "Subtitle.srt",
-            ".txt":  "intro_cue.txt",
+            ".vrew": (asset_dir, "원본.vrew"),
+            ".mp3":  (asset_dir, "TTS.mp3"),
+            ".srt":  (asset_dir, "Subtitle.srt"),
+            ".txt":  (input_dir, "intro_cue.txt"),
         }
-        dest = asset_dir / name_map[ext]
+        dest_dir, dest_name = name_map[ext]
+        dest = dest_dir / dest_name
 
         try:
             shutil.copy2(str(src), str(dest))

@@ -19,9 +19,13 @@ Vrew 파일 구조 (실물 분석 기반):
 import hashlib
 import json
 import shutil
+import subprocess
+import sys
 import uuid
 import zipfile
 from pathlib import Path
+
+_HIDDEN_SH = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
 
 from utils.theme import SHARED_ASSETS_DIR, SHARED_FX_DIR
 
@@ -1043,5 +1047,136 @@ def assemble_vrew(
             # 불투명 Video 클립 (.mp4 등 — bumper, intro)
             for mid, (vp, ext) in new_video_map.items():
                 z_out.write(str(vp), f"media/{mid}{ext}")
+
+    return out_path
+
+
+# ══════════════════════════════════════════════
+# §8  HyperFrames Vrew 조립
+# ══════════════════════════════════════════════
+
+def _get_mp4_duration(mp4_path: Path) -> float:
+    """ffprobe로 mp4 재생 시간(초) 추출."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error",
+             "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1",
+             str(mp4_path)],
+            capture_output=True, text=True, timeout=10,
+            **_HIDDEN_SH,
+        )
+        return float(r.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def assemble_vrew_hf(
+    asset_dir: Path,
+    timeline: list[dict],   # noqa: ARG001 — Phase 3에서 슬라이드-그룹 타이밍 정렬에 활용 예정
+    renders_dir: Path,
+    fps: int = 30,
+) -> Path:
+    """
+    HyperFrames 렌더된 .mp4 슬라이드들을 Vrew 파일에 조립.
+
+    assemble_vrew()와의 차이:
+      - 입력: renders_dir 내 slide_NN.mp4 (slides 기반, effects[] 아님)
+      - codec: h264 / hasAlphaChannel: False / zIndex: 10
+      - 버전 파일명: 최종_hf_vN.vrew
+      - 슬라이드 타이밍: ffprobe duration 누적 계산
+    """
+    # ── 원본 .vrew 탐색 ──
+    vrew_files = sorted(asset_dir.glob("*.vrew"))
+    originals  = [f for f in vrew_files if not f.stem.startswith("최종_")]
+    if not originals:
+        raise FileNotFoundError("asset 폴더에 원본.vrew 파일이 없습니다.")
+    vrew_src = originals[0]
+
+    # ── 출력 버전 결정 ──
+    v = 0
+    while (asset_dir / f"최종_hf_v{v}.vrew").exists():
+        v += 1
+    out_path = asset_dir / f"최종_hf_v{v}.vrew"
+
+    # ── project.json 로드 + 경로 정규화 ──
+    with zipfile.ZipFile(str(vrew_src), "r") as z:
+        project = json.loads(z.read("project.json").decode("utf-8"))
+    project = _normalize_file_paths(project)
+
+    clips        = project["transcript"]["clips"]
+    clip_timings = _compute_clip_timings(clips)
+    clip_by_id   = {cl["id"]: cl for cl in clips}
+
+    # ── slide_NN.mp4 파일 목록 정렬 ──
+    mp4_files = sorted(renders_dir.glob("slide_*.mp4"), key=lambda p: p.stem)
+
+    new_mp4_map: dict[str, Path] = {}   # mediaId → mp4 Path
+
+    cumulative_sec = 0.0
+    for mp4 in mp4_files:
+        dur_sec   = _get_mp4_duration(mp4)
+        start_sec = cumulative_sec
+        cumulative_sec += dur_sec
+
+        media_id = str(uuid.uuid4())
+        track_id = _random_track_id()
+        asset_id = str(uuid.uuid4())
+
+        # 클립 타이밍 매칭
+        target_clip_id = None
+        for ct in clip_timings:
+            if ct["start"] <= start_sec < ct["end"]:
+                target_clip_id = ct["clip_id"]
+                break
+        if target_clip_id is None and clip_timings:
+            target_clip_id = clip_timings[-1]["clip_id"]
+
+        # files[] 등록
+        project["files"].append({
+            "version": 1, "mediaId": media_id, "sourceOrigin": "USER",
+            "fileSize": mp4.stat().st_size, "name": f"{media_id}.mp4",
+            "type": "AVMedia",
+            "videoAudioMetaInfo": {
+                "duration": round(dur_sec, 3),
+                "videoInfo": {"codec": "h264", "frameRate": fps},
+            },
+            "sourceFileType": "VIDEO_ONLY", "fileLocation": "IN_MEMORY",
+        })
+
+        # tracks{} 등록
+        project["props"]["tracks"][track_id] = {
+            "trackId": track_id, "mediaId": media_id,
+            "xPos": 0.0, "yPos": 0.0, "height": 1.0, "width": 1.0,
+            "rotation": 0, "zIndex": 10,
+            "type": "video", "sourceIn": 0, "sourceOut": round(dur_sec, 3),
+            "hasAlphaChannel": False, "isTrimmable": True,
+            "editInfo": {}, "fillType": "cut",
+        }
+
+        # assets{} 등록
+        project["props"]["assets"][asset_id] = {
+            "trackIds": [track_id], "role": "sub",
+        }
+
+        # clip.assetIds 연결
+        if target_clip_id and target_clip_id in clip_by_id:
+            clip_by_id[target_clip_id]["assetIds"].append(asset_id)
+
+        new_mp4_map[media_id] = mp4
+
+    # ── ZIP 재조립 ──
+    with zipfile.ZipFile(str(vrew_src), "r") as z_in:
+        with zipfile.ZipFile(str(out_path), "w", zipfile.ZIP_DEFLATED) as z_out:
+            for item in z_in.infolist():
+                if item.filename == "project.json":
+                    continue
+                z_out.writestr(item, z_in.read(item.filename))
+            z_out.writestr(
+                "project.json",
+                json.dumps(project, ensure_ascii=False, separators=(",", ":")),
+            )
+            for mid, mp4_path in new_mp4_map.items():
+                z_out.write(str(mp4_path), f"media/{mid}.mp4")
 
     return out_path

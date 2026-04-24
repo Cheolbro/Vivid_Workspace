@@ -116,7 +116,7 @@ class Step2Widget(QWidget):
             self._log.highlight(f"프로젝트: {path.name}")
             # ── 기존 파일 복원 ──────────────────────────────────
             script    = path / "input" / "script.txt"
-            converted = path / "input" / "script_body_slide.txt"
+            converted = path / "asset" / "script_body_slide.txt"
             if converted.exists():
                 self._drop_zone.set_ready("script.txt")
                 self._next_btn.setEnabled(True)
@@ -178,7 +178,10 @@ class Step2Widget(QWidget):
         self._log.info("대본 변환을 시작합니다...")
 
         try:
-            result = convert_script(self._project_dir / "input")
+            result = convert_script(
+                self._project_dir / "input",
+                self._project_dir / "asset",
+            )
         except (FileNotFoundError, ValueError) as e:
             self._log.error(str(e))
             return
@@ -203,7 +206,7 @@ class Step2Widget(QWidget):
     def _on_open_folder(self):
         if self._project_dir is None:
             return
-        folder = self._project_dir / "input"
+        folder = self._project_dir / "asset"
         if sys.platform == "win32":
             subprocess.Popen(["explorer", str(folder)])
         elif sys.platform == "darwin":

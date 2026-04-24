@@ -19,8 +19,9 @@ from PySide6.QtWidgets import (
 
 from utils.theme import C_BG_MAIN, C_HIGHLIGHT, C_SUCCESS, C_ERROR, C_TEXT, C_BORDER
 
-ROOT_DIR     = Path(__file__).parent.parent
-REMOTION_DIR = ROOT_DIR / "Project_templete" / "remotion"
+ROOT_DIR        = Path(__file__).parent.parent
+REMOTION_DIR    = ROOT_DIR / "Project_templete" / "remotion"
+HYPERFRAMES_DIR = ROOT_DIR / "Project_templete" / "hyperframes"
 
 # Windows: 콘솔 창 숨김 플래그
 _HIDDEN = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
@@ -82,6 +83,23 @@ class HealthCheckWorker(QObject):
             )
             if proc.returncode == 0:
                 self.npm_done.emit(True, "node_modules 설치가 완료되었습니다!")
+            else:
+                self.npm_done.emit(False, f"npm install 실패:\n{proc.stderr[-400:]}")
+        except subprocess.TimeoutExpired:
+            self.npm_done.emit(False, "npm install 시간 초과 (5분). 네트워크 상태를 확인하세요.")
+        except Exception as e:
+            self.npm_done.emit(False, str(e))
+
+    def run_hf_npm_install(self):
+        try:
+            proc = subprocess.run(
+                [_NPM, "install"],
+                cwd=str(HYPERFRAMES_DIR),
+                capture_output=True, text=True, timeout=300,
+                **_HIDDEN,
+            )
+            if proc.returncode == 0:
+                self.npm_done.emit(True, "HyperFrames node_modules 설치가 완료되었습니다!")
             else:
                 self.npm_done.emit(False, f"npm install 실패:\n{proc.stderr[-400:]}")
         except subprocess.TimeoutExpired:
@@ -153,10 +171,14 @@ class HealthCheckDialog(QDialog):
         self._thread.started.connect(self._worker.run_check)
 
         # UI 레퍼런스
-        self._row_labels:  dict[str, QLabel] = {}
-        self._nm_status:   QLabel
-        self._npm_btn:     QPushButton
-        self._close_btn:   QPushButton
+        self._row_labels:    dict[str, QLabel] = {}
+        self._nm_status:     QLabel
+        self._npm_btn:       QPushButton
+        self._hf_nm_status:  QLabel
+        self._hf_npm_btn:    QPushButton
+        self._close_btn:     QPushButton
+        self._hf_npm_thread: QThread | None = None
+        self._hf_npm_worker: HealthCheckWorker | None = None
 
         # 좀비 프로세스 정리 (동기, UI 빌드 전 실행)
         self._zombie_killed: list[str] = kill_zombie_processes()
@@ -223,7 +245,7 @@ class HealthCheckDialog(QDialog):
         zombie_row.addStretch()
         layout.addLayout(zombie_row)
 
-        # node_modules 행
+        # node_modules 행 — Remotion
         nm_row = QHBoxLayout()
         nm_name = QLabel("  node_modules (Remotion 의존성)")
         nm_name.setFixedWidth(230)
@@ -244,6 +266,28 @@ class HealthCheckDialog(QDialog):
         self._npm_btn.clicked.connect(self._on_npm_click)
         nm_row.addWidget(self._npm_btn)
         layout.addLayout(nm_row)
+
+        # node_modules 행 — HyperFrames
+        hf_nm_row = QHBoxLayout()
+        hf_nm_name = QLabel("  node_modules (HyperFrames 의존성)")
+        hf_nm_name.setFixedWidth(230)
+        hf_nm_name.setStyleSheet("font-size:12px;")
+        self._hf_nm_status = QLabel("⏳ 확인 중...")
+        self._hf_nm_status.setStyleSheet("color:#888888; font-size:12px;")
+        hf_nm_row.addWidget(hf_nm_name)
+        hf_nm_row.addWidget(self._hf_nm_status)
+        hf_nm_row.addStretch()
+
+        self._hf_npm_btn = QPushButton("📦  npm install 실행")
+        self._hf_npm_btn.setVisible(False)
+        self._hf_npm_btn.setFixedWidth(160)
+        self._hf_npm_btn.setStyleSheet(
+            f"background:{C_HIGHLIGHT}; color:#000; font-weight:bold;"
+            "border-radius:4px; padding:4px 8px;"
+        )
+        self._hf_npm_btn.clicked.connect(self._on_hf_npm_click)
+        hf_nm_row.addWidget(self._hf_npm_btn)
+        layout.addLayout(hf_nm_row)
 
         layout.addWidget(self._divider())
 
@@ -280,7 +324,7 @@ class HealthCheckDialog(QDialog):
                 lbl.setText(f"❌  {msg}")
                 lbl.setStyleSheet(f"color:{C_ERROR}; font-size:11px;")
 
-        # node_modules 체크 (동기, 파일 존재 여부)
+        # node_modules 체크 — Remotion
         nm_path = REMOTION_DIR / "node_modules"
         if nm_path.exists() and nm_path.is_dir():
             self._nm_status.setText("✅  설치됨")
@@ -289,6 +333,16 @@ class HealthCheckDialog(QDialog):
             self._nm_status.setText("⚠️  미설치 — Remotion 실행 전 npm install이 필요합니다")
             self._nm_status.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:11px;")
             self._npm_btn.setVisible(True)
+
+        # node_modules 체크 — HyperFrames
+        hf_nm_path = HYPERFRAMES_DIR / "node_modules"
+        if hf_nm_path.exists() and hf_nm_path.is_dir():
+            self._hf_nm_status.setText("✅  설치됨")
+            self._hf_nm_status.setStyleSheet(f"color:{C_SUCCESS}; font-size:11px;")
+        else:
+            self._hf_nm_status.setText("⚠️  미설치 — HyperFrames 실행 전 npm install이 필요합니다")
+            self._hf_nm_status.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:11px;")
+            self._hf_npm_btn.setVisible(True)
 
     def _on_npm_click(self):
         self._npm_btn.setEnabled(False)
@@ -317,10 +371,37 @@ class HealthCheckDialog(QDialog):
             self._npm_btn.setEnabled(True)
             self._npm_btn.setText("📦  npm install 재시도")
 
+    def _on_hf_npm_click(self):
+        self._hf_npm_btn.setEnabled(False)
+        self._hf_npm_btn.setText("⏳ 설치 중...")
+        self._hf_nm_status.setText("npm install 실행 중... (수 분 소요될 수 있습니다)")
+        self._hf_nm_status.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:11px;")
+
+        self._hf_npm_worker = HealthCheckWorker()
+        self._hf_npm_thread = QThread(self)
+        self._hf_npm_worker.moveToThread(self._hf_npm_thread)
+        self._hf_npm_worker.npm_done.connect(self._on_hf_npm_done)
+        self._hf_npm_thread.started.connect(self._hf_npm_worker.run_hf_npm_install)
+        self._hf_npm_thread.start()
+
+    def _on_hf_npm_done(self, success: bool, msg: str):
+        if self._hf_npm_thread:
+            self._hf_npm_thread.quit()
+
+        if success:
+            self._hf_nm_status.setText(f"✅  {msg}")
+            self._hf_nm_status.setStyleSheet(f"color:{C_SUCCESS}; font-size:11px;")
+            self._hf_npm_btn.setVisible(False)
+        else:
+            self._hf_nm_status.setText(f"❌  {msg[:120]}")
+            self._hf_nm_status.setStyleSheet(f"color:{C_ERROR}; font-size:11px;")
+            self._hf_npm_btn.setEnabled(True)
+            self._hf_npm_btn.setText("📦  npm install 재시도")
+
     # ── 정리 ────────────────────────────────────────────────────────────
 
     def closeEvent(self, event):
-        for t in (self._thread, self._npm_thread):
+        for t in (self._thread, self._npm_thread, self._hf_npm_thread):
             if t and t.isRunning():
                 t.quit()
                 t.wait(1500)

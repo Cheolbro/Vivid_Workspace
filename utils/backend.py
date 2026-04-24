@@ -73,9 +73,12 @@ def build_slide_script(body_text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def convert_script(input_dir: Path) -> dict[str, Path]:
+def convert_script(input_dir: Path, asset_dir: Path) -> dict[str, Path]:
     """
-    input_dir/script.txt → script_intro.txt, script_body.txt, script_body_slide.txt 생성.
+    input_dir/script.txt 읽기 → asset_dir에 파생 파일 3종 생성.
+      · asset_dir/script_intro.txt
+      · asset_dir/script_body.txt
+      · asset_dir/script_body_slide.txt
 
     하네스:
       - 파일 미존재 → FileNotFoundError
@@ -102,9 +105,10 @@ def convert_script(input_dir: Path) -> dict[str, Path]:
 
     slide = build_slide_script(body)
 
-    out_intro = input_dir / "script_intro.txt"
-    out_body  = input_dir / "script_body.txt"
-    out_slide = input_dir / "script_body_slide.txt"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    out_intro = asset_dir / "script_intro.txt"
+    out_body  = asset_dir / "script_body.txt"
+    out_slide = asset_dir / "script_body_slide.txt"
 
     out_intro.write_text(intro, encoding="utf-8")
     out_body.write_text(body,   encoding="utf-8")
@@ -253,17 +257,107 @@ def parse_srt(srt_path: Path) -> list[dict]:
     return records
 
 
+def _parse_slide_paragraphs(slide_text: str) -> list[tuple[int, str]]:
+    """[슬라이드 N] 섹션 파싱 → (슬라이드번호, 문단텍스트) 리스트"""
+    parts = re.split(r'\[슬라이드\s+(\d+)\]', slide_text)
+    result = []
+    for i in range(1, len(parts), 2):
+        result.append((int(parts[i]), parts[i + 1].strip()))
+    return result
+
+
+def _norm(text: str) -> str:
+    """구두점·공백 제거 → 퍼지 매칭용"""
+    return re.sub(r'[^\w]', '', text)
+
+
+def _find_end_seg_idx(
+    segments: list[dict], paragraph: str, search_from: int = 0
+) -> int | None:
+    """
+    문단의 마지막 어절을 포함하는 SRT 세그먼트 인덱스 반환.
+    5→4→3→2→1어절 순으로 축소하며 탐색 (Bleeding 케이스 대응).
+    """
+    words = re.sub(r'[^\w\s]', '', paragraph).split()
+    sub = segments[search_from:]
+    for length in (5, 4, 3, 2, 1):
+        if len(words) < length:
+            continue
+        phrase = _norm(' '.join(words[-length:]))
+        for i, seg in enumerate(reversed(sub)):
+            if phrase in _norm(seg['text']):
+                return search_from + (len(sub) - 1 - i)
+    return None
+
+
 def generate_timeline_json(asset_dir: Path) -> Path:
     """
-    asset_dir/Subtitle.srt → asset_dir/base_timeline.json 생성.
+    asset_dir/Subtitle.srt + asset_dir/script_body_slide.txt →
+    enriched 슬라이드 그루핑 형식의 base_timeline.json 생성.
+    script_body_slide.txt 미존재 시 flat SRT 리스트로 폴백.
     Returns: 생성된 json Path
     """
-    srt_path = asset_dir / "Subtitle.srt"
-    records  = parse_srt(srt_path)          # 내부에서 하네스 검사
+    srt_path   = asset_dir / "Subtitle.srt"
+    slide_path = asset_dir / "script_body_slide.txt"
+
+    segments = parse_srt(srt_path)
+
+    # 폴백: 슬라이드 스크립트 없으면 기존 flat 포맷 유지
+    if not slide_path.exists():
+        out_path = asset_dir / "base_timeline.json"
+        out_path.write_text(
+            json.dumps(segments, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return out_path
+
+    slides_raw = _parse_slide_paragraphs(slide_path.read_text(encoding="utf-8"))
+
+    result: list[dict] = []
+    seg_cursor = 0
+
+    for idx, (slide_num, paragraph) in enumerate(slides_raw):
+        end_idx = _find_end_seg_idx(segments, paragraph, search_from=seg_cursor)
+        if end_idx is None:
+            continue
+
+        end_seg   = segments[end_idx]
+        slide_end = end_seg['end']
+
+        if idx == 0:
+            # 슬라이드 1 시작: 본문 첫 어절이 있는 SRT 세그먼트 탐색
+            first_words  = re.sub(r'[^\w\s]', '', paragraph).split()[:4]
+            first_phrase = _norm(' '.join(first_words))
+            slide_start: float = segments[0]['start']
+            for seg in segments:
+                if first_phrase in _norm(seg['text']):
+                    slide_start = seg['start']
+                    break
+        else:
+            slide_start = result[-1]['end']
+
+        start_idx = next(
+            (i for i, s in enumerate(segments) if s['start'] >= slide_start),
+            seg_cursor,
+        )
+        slide_segments = segments[start_idx : end_idx + 1]
+        full_text = ' '.join(s['text'] for s in slide_segments)
+
+        seg_cursor = end_idx + 1
+
+        result.append({
+            "slide_id":  f"slide_{slide_num:02d}",
+            "bg_image":  f"image_{slide_num}.jpeg",
+            "start":     round(slide_start, 3),
+            "end":       round(slide_end,   3),
+            "duration":  round(slide_end - slide_start, 3),
+            "full_text": full_text,
+            "segments":  slide_segments,
+        })
 
     out_path = asset_dir / "base_timeline.json"
     out_path.write_text(
-        json.dumps(records, ensure_ascii=False, indent=2),
+        json.dumps(result, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     return out_path

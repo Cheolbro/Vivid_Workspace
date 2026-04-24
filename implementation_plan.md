@@ -1,47 +1,139 @@
-# VIVID Radar - A3 모듈(FindTitle) 기능 고도화 구현 계획
+# HyperFrames 통합 구현 계획서
 
-본 계획은 기존 통합된 GUI에서 **A3 모듈(제목 생성 및 검증)**의 사용성을 대폭 개선하기 위한 지시서입니다. 기존의 단일 입력 후 즉시 탐색 방식에서 벗어나, **다중 레퍼런스 누적 입력 → 단계별 실행(생성 후 검증)** 구조로 개편합니다. 에이전트(gemini cli)는 이 문서에 따라 A3 모듈의 GUI와 내부 로직을 재설계합니다.
-
----
-
-## 1. GUI 컨트롤 구조 변경 (A3 전용 탭)
-
-A3 탭의 레이아웃을 사용자가 과정을 통제할 수 있는 **2-Step 구조**로 변경합니다.
-
-### 1-1. 레퍼런스 목록 누적 입력부 (Step 1)
-
-- **입력 칸 및 추가 버튼:**
-  - `QLineEdit` (레퍼런스 제목 입력용)
-  - `QPushButton` ("+ 추가" 또는 "목록에 담기" 버튼). (Enter 키를 눌러도 추가되도록 이벤트 바인딩)
-- **누적 목록 표시창:**
-  - `QListWidget` 또는 `QTextEdit`. 추가된 레퍼런스 제목들이 리스트업되는 영역입니다. 사용자가 확인할 수 있어야 합니다.
-- **제목 생성 버튼:**
-  - `QPushButton` ("✨ AI 제목 후보 생성"). 레퍼런스가 충분히 모인 뒤 누르는 버튼입니다.
-
-### 1-2. AI 생성 내용 확인 및 검증부 (Step 2)
-
-- **생성된 후보 표시창:**
-  - AI(Gemini) 모델이 만들어낸 제목 변형본 배열들이 노출되는 `QTextEdit` 창입니다. 여기서 사용자가 생성된 제목들을 1차 눈으로 확인합니다.
-- **검증 탐색 버튼:**
-  - `QPushButton` ("🔍 시크릿 모드 본격 탐색"). 생성된 타이틀 텍스트들을 바탕으로 실제 조회를 시작하는 최종 트리거 버튼입니다.
+> 새 세션 시작 시 이 파일을 먼저 읽을 것.
 
 ---
 
-## 2. 모듈 내부 작동 로직 (백엔드 분리)
+## 현재 상태 (2026-04-24)
 
-기존에 버튼 하나로 작동하던 A3 로직 코드를 분리 및 리팩토링합니다.
+### 완료된 것
 
-### 2-1. AI 제목 베리에이션 생성 (Generation Phase)
+| 항목                           | 파일                                                                                                                                   |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| n8n 파이프라인 (5노드)         | `n8n_workflow/hyperframes_pipeline.json`                                                                                               |
+| HyperFrames 렌더 엔진          | `utils/hf_renderer.py` — `render_slide()` / `render_all_slides()` + delta + 재시도                                                     |
+| Health Check HyperFrames 항목  | `utils/health_check.py` — node_modules 체크 + npm install 버튼                                                                         |
+| Vrew HF 조립                   | `utils/backend_ext.py` — `assemble_vrew_hf()` (mp4, H.264, zIndex=10)                                                                  |
+| Step 4 HyperFrames 탭 — STEP A | `steps/step4.py` `_trigger_n8n()` — n8n 웹훅 POST 트리거 버튼                                                                          |
+| Step 4 HyperFrames 탭 — STEP B | `_on_hf_plan_received()` — `hyperframes_compositions.json` 업로드·lint·슬라이드별 HTML 저장                                            |
+| Step 4 HyperFrames 탭 — STEP C | `HfEditorPanel` — QWebEngineView 미리보기 + 속성 패널(X/Y/fontSize/color/text/gsap_start) + Undo/Redo + 타임라인 스크러버 + delta 저장 |
+| Step 4 HyperFrames 탭 — STEP D | `_on_hf_render_click()` → `HFRenderWorker` — 슬라이드별 `.mp4` 렌더 + 진행률 표시                                                      |
+| Step 4 HyperFrames 탭 — STEP E | `_on_hf_vrew_click()` → `HFVrewWorker` → `assemble_vrew_hf()` — 최종 `최종_hf_vN.vrew` 생성                                            |
 
-- **트리거:** 사용자가 "✨ AI 제목 후보 생성" 버튼 클릭.
-- **로직:** 리스트에 담긴 '여러 개의' 레퍼런스 제목들을 한 번에 프롬프트로 묶어 `google-generativeai` 로 전달합니다. (예: "다음 N개의 조회수 대박 난 레퍼런스 제목들을 벤치마킹하여 제목 15개를 생성해...")
-- 생성된 텍스트는 즉각 GUI 화면의 두 번째 표시창에 뿌려집니다. (Playwright는 아직 구동하지 않습니다.)
+### 즉시 해결 필요 (최우선 블로커)
 
-### 2-2. 배치 기반 시크릿 모드 탐색 (Validation Phase)
+없음. 엔드투엔드 검증 완료 (2026-04-24).
 
-- **트리거:** 사용자가 "🔍 시크릿 모드 본격 탐색" 버튼 클릭.
-- **로직:**
-  1. Playwright 백엔드가 **`Incognito Context` (100% 시크릿 모드/깡통 계정)** 상태로 브라우저를 구동합니다.
-  2. 생성된 제목 리스트를 **배치(Batch)** 단위로 나눕니다. (1배치 = 제목 15개)
-  3. 반복문을 돌며 제목별로 유튜브 검색을 수행하여 객관적 노출 현황과 AI 라벨/경쟁 강도를 수집합니다.
-  4. 과정별 로깅과 최종 검증 점수 결과는 하단 상태창 혹은 DB(`title_suggestions` 테이블)에 기록하며 업데이트합니다.
+**n8n 기동 시 필수 환경변수**:
+
+```powershell
+$env:NODE_FUNCTION_ALLOW_BUILTIN="*"
+$env:NODE_FUNCTION_ALLOW_EXTERNAL="*"
+n8n start
+```
+
+---
+
+## 다음 작업: Phase 4 — QWebEngineView 편집 UI
+
+현재 Step 4 HyperFrames 탭의 **STEP C**는 `HfEditorPanel` 위젯이 자리잡고 있으나 편집 기능 미구현.
+
+| 항목           | 결정                                                                      |
+| -------------- | ------------------------------------------------------------------------- |
+| 편집 가능 속성 | 위치(드래그), 크기, 색상, 텍스트, GSAP 시작 시점                          |
+| 저장 방식      | `slide_NN_delta.json` (delta 파일) — `hf_renderer.py`가 렌더 시 자동 적용 |
+| Undo/Redo      | 필요                                                                      |
+| 타임라인       | 재생/정지/스크러빙                                                        |
+
+`delta.json` 구조 (`_apply_delta()` — `utils/hf_renderer.py`에 이미 구현):
+
+```json
+{
+  "elements": {
+    ".text-1": { "x": 100, "y": -50, "fontSize": "90px", "color": "#FFD700" },
+    ".bg": { "x": 0, "y": 0 }
+  }
+}
+```
+
+---
+
+## 미확정
+
+- **A-5 인트로/범퍼** — 권장: `base_timeline.json`에 `"type":"intro"` 슬라이드로 편입
+
+---
+
+## 아키텍처 요약
+
+```
+base_timeline.json + image_N.jpeg
+        ↓ (n8n 파이프라인)
+hyperframes_compositions.json   {"slide_01": "<!DOCTYPE html>...", ...}
+        ↓ (Step 4 STEP B 업로드)
+hyperframes/compositions/slide_NN.html
+        ↓ (Step 4 STEP D 렌더)
+output/hyperframes/slide_NN.mp4   (1920×1080, 30fps, H.264, 불투명)
+        ↓ (Step 4 STEP E)
+asset/최종_hf_vN.vrew
+```
+
+**프로젝트 폴더 구조**:
+
+```
+ProjectName/
+├── asset/
+│   ├── base_timeline.json       ← generate_timeline_json() 생성
+│   ├── image_1.jpeg ...         ← Watchdog 수집
+│   ├── hyperframes_compositions.json  ← n8n 출력 / 사용자 업로드
+│   └── hf_render_report.json
+├── output/hyperframes/          ← slide_NN.mp4
+└── hyperframes/
+    ├── package.json  {"dependencies":{"@hyperframes/cli":"^0.4.13"}}
+    ├── node_modules/
+    └── compositions/slide_NN.html
+```
+
+---
+
+## 핵심 스키마
+
+**base_timeline.json** (`generate_timeline_json()` — `utils/backend.py`):
+
+```json
+[
+  {
+    "slide_id": "slide_01",
+    "bg_image": "image_1.jpeg",
+    "start": 53.77,
+    "end": 85.57,
+    "duration": 31.8,
+    "full_text": "대본 전문...",
+    "segments": [{ "index": 21, "start": 53.77, "end": 58.03, "text": "..." }]
+  }
+]
+```
+
+**hyperframes_compositions.json**: `{"slide_01": "<전체 HTML>", "slide_02": "..."}`
+
+**HTML 슬라이드 기술 상수** (Generator 출력):
+
+- Canvas: 1920×1080, `margin:0; overflow:hidden`
+- 클래스: `.bg` / `.text-1` / `.text-2` / `.text-3`
+- 좌표: `left: calc(50% + Xpx); top: calc(50% + Ypx);` (캔버스 중앙 기준)
+- GSAP: `https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js`
+- 배경 이미지 경로: `../../asset/IMAGE_FILENAME` (상대경로, compositions/ 기준 두 단계 위)
+
+---
+
+## 기술 참조
+
+| 항목              | 내용                                                                    |
+| ----------------- | ----------------------------------------------------------------------- |
+| n8n 실행          | `$env:NODE_FUNCTION_ALLOW_BUILTIN="*"; n8n start`                       |
+| n8n 워크플로우    | `n8n_workflow/hyperframes_pipeline.json`                                |
+| HyperFrames SKILL | `/c/Youtube/hyperframes/skills/hyperframes/SKILL.md`                    |
+| HyperFrames CLI   | `/c/Youtube/hyperframes/skills/hyperframes-cli/SKILL.md`                |
+| Gemini CLI        | `--yolo` 필수, `-m` 생략(auto), Vision = 프롬프트에 파일 경로 직접 포함 |
+| `.geminiignore`   | `*.mp4 *.mp3 *.wav *.webm` 제외, `!*.jpeg !*.jpg !*.png !*.webp` 허용   |
+| Windows spawn     | `bash -c "gemini --yolo \"...\""` (cmd.exe는 한글+JSON 오염)            |

@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Slide 02 - 국제 공동 비축</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      body,
+      html {
+        margin: 0;
+        padding: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background-color: #000;
+        font-family: "Pretendard", sans-serif;
+      }
+      #composition {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+      }
+      .bg {
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        background-image: url("../../asset/image_2.jpeg");
+        background-size: cover;
+        background-position: center;
+      }
+      .vignette {
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        background: radial-gradient(circle, transparent 40%, rgba(0, 0, 0, 0.6) 100%);
+        opacity: 0;
+        pointer-events: none;
+      }
+      .text-common {
+        position: absolute;
+        color: white;
+        text-shadow: 2px 2px 10px rgba(0, 0, 0, 0.8);
+        font-weight: 800;
+        white-space: nowrap;
+        opacity: 0;
+        transform: translate(-50%, -50%);
+      }
+      .text-1 {
+        font-size: 85px;
+        left: calc(50% + 550px);
+        top: calc(50% + 230px);
+        color: #00e5ff; /* Cyan for professional FX */
+      }
+      .text-2 {
+        font-size: 65px;
+        left: calc(50% + 550px);
+        top: calc(50% + 130px);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="composition" data-composition-id="slide-02" data-duration="25.12">
+      <div class="bg"></div>
+      <div class="vignette"></div>
+      <div class="text-common text-1">국제 공동 비축</div>
+      <div class="text-common text-2">안전한 대안</div>
+    </div>
+
+    <script>
+      const tl = gsap.timeline();
+
+      // Ken Burns: Pan-left
+      tl.fromTo(
+        ".bg",
+        { scale: 1.1, x: 50 },
+        { scale: 1.0, x: -50, duration: 25.12, ease: "none" },
+        0
+      );
+
+      // Vignette Flash Effect
+      tl.to(
+        ".vignette",
+        {
+          opacity: 1,
+          duration: 0.3,
+          repeat: 5,
+          yoyo: true,
+          ease: "power1.inOut",
+        },
+        1.0
+      );
+
+      // Text Animations
+      tl.to(
+        ".text-2",
+        {
+          opacity: 1,
+          x: "-=30",
+          duration: 0.6,
+          ease: "power2.out",
+        },
+        1.5
+      );
+
+      tl.to(
+        ".text-1",
+        {
+          opacity: 1,
+          scale: 1.1,
+          duration: 0.7,
+          ease: "elastic.out(1, 0.5)",
+        },
+        2.2
+      );
+
+      // FX Glow Pulse
+      tl.to(
+        ".text-1",
+        {
+          textShadow: "0 0 30px rgba(0, 229, 255, 1)",
+          duration: 0.8,
+          repeat: -1,
+          yoyo: true,
+        },
+        3.0
+      );
+    </script>
+  </body>
+</html>
