@@ -1,0 +1,449 @@
+{
+  "name": "VIVID v5.0 — Chapter Sub-workflow",
+  "nodes": [
+    {
+      "id": "sub-trigger",
+      "name": "Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [200, 400],
+      "parameters": {}
+    },
+    {
+      "id": "node-02-rhubarb",
+      "name": "Node 2 — Rhubarb Lipsync",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [480, 260],
+      "parameters": {
+        "command": "=rhubarb \"{{ $json.chapter_audio_path }}\" -f json -o \"{{ $json.project_root }}/lipsync/{{ $json.chapter_id }}_lipsync.json\"",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "_comment": "BN-4: CPU 전용 — GPU 작업(Node 3/4)과 완전 병렬. 챕터별 mp3 기반 립싱크 분석."
+    },
+    {
+      "id": "node-02-parse",
+      "name": "Node 2 — Parse Lipsync",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 260],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\nconst item = $input.first().json;\nconst lipsyncPath = path.join(item.project_root, 'lipsync', `${item.chapter_id}_lipsync.json`);\nif (!fs.existsSync(lipsyncPath)) {\n  return [{ json: { ...item, lipsync_path: null, lipsync_error: 'Rhubarb output missing' } }];\n}\nconst raw = JSON.parse(fs.readFileSync(lipsyncPath, 'utf-8'));\nconst speaking = [];\nconst cues = raw.mouthCues || [];\nlet segStart = null;\nfor (const c of cues) {\n  if (c.value !== 'X') {\n    if (segStart === null) segStart = c.start;\n  } else {\n    if (segStart !== null) { speaking.push({ start: segStart, end: c.start, mouth: 'speaking' }); segStart = null; }\n  }\n}\nif (segStart !== null) speaking.push({ start: segStart, end: cues[cues.length-1].end || segStart+0.1, mouth: 'speaking' });\nconst refined = path.join(item.project_root, 'lipsync', `${item.chapter_id}_lipsync.json`);\nfs.writeFileSync(refined, JSON.stringify(speaking, null, 2), 'utf-8');\nreturn [{ json: { ...item, lipsync_path: refined.replace(/\\\\/g, '/'), speaking_segments: speaking.length } }];"
+      }
+    },
+    {
+      "id": "node-03-director",
+      "name": "Node 3 — Director (Gemini)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 540],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// n8n_workflow/nodes/node3_director_prompt.js 내용 붙여넣기.\n// 대본 + SRT → Gemini CLI → 연출 기획안 JSON (camera_choreography, kinetic_typography 등).\n// 출력: project/plan/<chapter_id>_plan.json 저장 + plan_path 반환.\nthrow new Error('[Sub] node3_director_prompt.js 코드를 이 Code Node에 붙여넣으세요.');"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 15000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "node-04-asset-prompt",
+      "name": "Node 4 — Asset Prompt (Gemini)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 540],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// n8n_workflow/nodes/node4_asset_prompt.js 내용 붙여넣기.\n// Node 3 plan + references_catalog → Gemini CLI → asset_prompts[] 배열.\n// 5계층 검색 + pose 라이브러리 매칭 + 시드 정책.\nthrow new Error('[Sub] node4_asset_prompt.js 코드를 이 Code Node에 붙여넣으세요.');"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 15000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "node-05-split",
+      "name": "Node 5 — Split Asset Items",
+      "type": "n8n-nodes-base.itemLists",
+      "typeVersion": 3,
+      "position": [960, 540],
+      "parameters": {
+        "operation": "splitOutItems",
+        "fieldToSplitOut": "asset_prompts",
+        "options": {
+          "include": "allOtherFields"
+        }
+      },
+      "_comment": "1대N 전개: 배열 asset_prompts를 개별 n8n 아이템으로 분할. 메타데이터(chapter_id, scene_id 등) 유지."
+    },
+    {
+      "id": "node-02-34-merge",
+      "name": "Merge — Rhubarb + Plan/Assets",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [960, 400],
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition"
+      },
+      "_comment": "Node 2(Rhubarb) + Node 3/4(Gemini 기획/에셋) 병렬 분기 합류점. lipsync_path를 에셋 아이템들에 전파."
+    },
+    {
+      "id": "node-06-switch",
+      "name": "Node 6 — Asset Type Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1200, 540],
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.asset_type }}",
+        "rules": {
+          "rules": [
+            { "value2": "character", "output": 0 },
+            { "value2": "prop", "output": 1 },
+            { "value2": "background", "output": 2 },
+            { "value2": "foreground", "output": 3 }
+          ]
+        }
+      },
+      "_comment": "4분기 라우팅: character→7A, prop→7B, background→7C, foreground→7D"
+    },
+    {
+      "id": "node-07-comfyui",
+      "name": "Node 7 — ComfyUI Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 540],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// n8n_workflow/nodes/node7_comfyui_payload.js 내용 붙여넣기.\n// L3 캐시 + 4분기 워크플로우 빌더 + VRAM 정책.\n// ComfyUI API POST: http://127.0.0.1:8188/prompt\nthrow new Error('[Sub] node7_comfyui_payload.js 코드를 이 Code Node에 붙여넣으세요.');"
+      },
+      "_comment": "Node 6 Switch의 4개 출력이 모두 이 단일 Code Node로 연결됨. asset_type 필드로 내부 분기."
+    },
+    {
+      "id": "node-07-http",
+      "name": "Node 7 — HTTP ComfyUI API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1680, 540],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8188/prompt",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "client_id",
+              "value": "={{ $json.prompt_id }}"
+            },
+            {
+              "name": "prompt",
+              "value": "={{ JSON.stringify($json.comfyui_payload?.prompt || {}) }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000,
+      "onError": "continueErrorOutput",
+      "_comment": "skip_comfyui===true인 캐시 히트 아이템은 이 노드를 IF로 우회."
+    },
+    {
+      "id": "node-07-cache-if",
+      "name": "IF — Cache Hit Skip",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1560, 400],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.skip_comfyui }}",
+              "operation": "equals",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "_comment": "L1/L2/L3 캐시 히트 → Node 8 웹훅 대기 스킵, 바로 Node 9로."
+    },
+    {
+      "id": "node-08-wait",
+      "name": "Node 8 — Wait Webhook",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1920, 540],
+      "parameters": {
+        "resume": "webhook",
+        "options": {
+          "webhookSuffix": "={{ $json.prompt_id }}",
+          "timeout": 300,
+          "timeoutUnit": "seconds"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000,
+      "_comment": "ComfyUI 완료 웹훅 대기. Resume Key = prompt_id. 타임아웃 300초."
+    },
+    {
+      "id": "node-08-merge",
+      "name": "Merge — Cache + Webhook",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2160, 470],
+      "parameters": {
+        "mode": "append"
+      },
+      "_comment": "캐시 히트 경로 + 웹훅 완료 경로 합류"
+    },
+    {
+      "id": "node-09-packager",
+      "name": "Node 9 — Asset Packager",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2400, 470],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// n8n_workflow/nodes/node9_asset_packager.js 내용 붙여넣기.\n// 파일명 규격화 + WebP lossless 변환 + 폴더 정리 + 에셋 경로 목록 JSON.\nthrow new Error('[Sub] node9_asset_packager.js 코드를 이 Code Node에 붙여넣으세요.');"
+      }
+    },
+    {
+      "id": "node-09-5-archiver",
+      "name": "Node 9.5 — Asset Archiver",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2640, 470],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// n8n_workflow/nodes/node9_5_asset_archiver.js 내용 붙여넣기.\n// generate_asset:true 항목 → auto_generated_assets 카탈로그 등재 + hnswlib 인덱스.\nthrow new Error('[Sub] node9_5_asset_archiver.js 코드를 이 Code Node에 붙여넣으세요.');"
+      }
+    },
+    {
+      "id": "node-10-assembler",
+      "name": "Node 10 — Master Assembler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2880, 470],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// n8n_workflow/nodes/node10_master_assembler.js 내용 붙여넣기.\n// plan + assets + lipsync + branding + delta → chapter_NN.html 빌드.\nthrow new Error('[Sub] node10_master_assembler.js 코드를 이 Code Node에 붙여넣으세요.');"
+      }
+    },
+    {
+      "id": "node-11-renderer",
+      "name": "Node 11 — HyperFrames Render",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3120, 470],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// n8n_workflow/nodes/node11_cinematic_renderer.js 내용 붙여넣기.\n// HyperFrames CLI → chapter_NN.mp4 렌더링.\n// Stop & Resume: SHA256 캐시 검사 → 변경 없으면 스킵.\nthrow new Error('[Sub] node11_cinematic_renderer.js 코드를 이 Code Node에 붙여넣으세요.');"
+      }
+    },
+    {
+      "id": "sub-output",
+      "name": "Sub-workflow Output",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [3360, 470],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            { "name": "concat_type", "value": "chapter", "type": "string" },
+            { "name": "concat_path", "value": "={{ $json.render_mp4_path }}", "type": "string" },
+            { "name": "chapter_id", "value": "={{ $json.chapter_id }}", "type": "string" },
+            { "name": "chapter_index", "value": "={{ $json.chapter_index }}", "type": "number" },
+            {
+              "name": "chapter_global_start",
+              "value": "={{ $json.chapter_global_start }}",
+              "type": "number"
+            },
+            {
+              "name": "chapter_global_end",
+              "value": "={{ $json.chapter_global_end }}",
+              "type": "number"
+            },
+            { "name": "duration_sec", "value": "={{ $json.duration_sec }}", "type": "number" }
+          ]
+        }
+      },
+      "_comment": "Master Workflow의 Aggregate로 반환. concat_type + concat_path로 Node 12가 순서 조립."
+    },
+    {
+      "id": "sub-error-telegram",
+      "name": "Error — Telegram Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [2880, 700],
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "🚨 Chapter Sub-workflow 실패\n\n{{ $json.error_message || JSON.stringify($json) }}\n\n챕터: {{ $json.chapter_id || 'N/A' }}\n시간: {{ $now.toISO() }}",
+        "additionalFields": {}
+      }
+    },
+    {
+      "id": "node-v5-api-route",
+      "name": "IF — V5 API Route",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1640, 260],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.source_api }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "_comment": "V5.0: source_api가 있으면 Pexels/Pixabay API 경로, 없으면 기존 캐시 스킵 경로"
+    },
+    {
+      "id": "node-v5-api-fetch",
+      "name": "Node V5 — API Fetch & Result Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1880, 160],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// n8n_workflow/nodes/node_v5_api_fetch.js 내용 참조\nthrow new Error('[Sub] node_v5_api_fetch.js 코드를 이 Code Node에 붙여넣으세요.');"
+      },
+      "_comment": "V5.0: Pexels/Pixabay 호출 후 원본 데이터 유지하며 병합 (HTTP Request 덮어쓰기 방지)"
+    }
+  ],
+  "connections": {
+    "Sub-workflow Trigger": {
+      "main": [
+        [
+          { "node": "Node 2 — Rhubarb Lipsync", "type": "main", "index": 0 },
+          { "node": "Node 3 — Director (Gemini)", "type": "main", "index": 0 }
+        ]
+      ],
+      "_comment": "Node 2(Rhubarb CPU) + Node 3(Gemini) 병렬 분기"
+    },
+    "Node 2 — Rhubarb Lipsync": {
+      "main": [[{ "node": "Node 2 — Parse Lipsync", "type": "main", "index": 0 }]]
+    },
+    "Node 2 — Parse Lipsync": {
+      "main": [[{ "node": "Merge — Rhubarb + Plan/Assets", "type": "main", "index": 0 }]]
+    },
+    "Node 3 — Director (Gemini)": {
+      "main": [[{ "node": "Node 4 — Asset Prompt (Gemini)", "type": "main", "index": 0 }]]
+    },
+    "Node 4 — Asset Prompt (Gemini)": {
+      "main": [[{ "node": "Merge — Rhubarb + Plan/Assets", "type": "main", "index": 1 }]]
+    },
+    "Merge — Rhubarb + Plan/Assets": {
+      "main": [[{ "node": "Node 5 — Split Asset Items", "type": "main", "index": 0 }]]
+    },
+    "Node 5 — Split Asset Items": {
+      "main": [[{ "node": "Node 6 — Asset Type Switch", "type": "main", "index": 0 }]]
+    },
+    "Node 6 — Asset Type Switch": {
+      "main": [
+        [{ "node": "Node 7 — ComfyUI Payload", "type": "main", "index": 0 }],
+        [{ "node": "Node 7 — ComfyUI Payload", "type": "main", "index": 0 }],
+        [{ "node": "Node 7 — ComfyUI Payload", "type": "main", "index": 0 }],
+        [{ "node": "Node 7 — ComfyUI Payload", "type": "main", "index": 0 }]
+      ],
+      "_comment": "4분기 모두 동일 Node 7 Code Node로 수렴 — 내부에서 asset_type으로 분기"
+    },
+    "Node 7 — ComfyUI Payload": {
+      "main": [[{ "node": "IF — Cache Hit Skip", "type": "main", "index": 0 }]]
+    },
+    "IF — Cache Hit Skip": {
+      "main": [
+        [{ "node": "IF — V5 API Route", "type": "main", "index": 0 }],
+        [{ "node": "Node 7 — HTTP ComfyUI API", "type": "main", "index": 0 }]
+      ],
+      "_comment": "true(캐시 히트/API 스킵) → V5 API 라우터, false(캐시 미스) → ComfyUI HTTP"
+    },
+    "IF — V5 API Route": {
+      "main": [
+        [{ "node": "Node V5 — API Fetch & Result Handler", "type": "main", "index": 0 }],
+        [{ "node": "Merge — Cache + Webhook", "type": "main", "index": 0 }]
+      ],
+      "_comment": "true(source_api 있음) → API Fetch, false(기존 캐시 스킵) → 바로 Merge"
+    },
+    "Node V5 — API Fetch & Result Handler": {
+      "main": [[{ "node": "Merge — Cache + Webhook", "type": "main", "index": 0 }]]
+    },
+    "Node 7 — HTTP ComfyUI API": {
+      "main": [[{ "node": "Node 8 — Wait Webhook", "type": "main", "index": 0 }]]
+    },
+    "Node 8 — Wait Webhook": {
+      "main": [[{ "node": "Merge — Cache + Webhook", "type": "main", "index": 1 }]]
+    },
+    "Merge — Cache + Webhook": {
+      "main": [[{ "node": "Node 9 — Asset Packager", "type": "main", "index": 0 }]]
+    },
+    "Node 9 — Asset Packager": {
+      "main": [[{ "node": "Node 9.5 — Asset Archiver", "type": "main", "index": 0 }]]
+    },
+    "Node 9.5 — Asset Archiver": {
+      "main": [[{ "node": "Node 10 — Master Assembler", "type": "main", "index": 0 }]]
+    },
+    "Node 10 — Master Assembler": {
+      "main": [[{ "node": "Node 11 — HyperFrames Render", "type": "main", "index": 0 }]]
+    },
+    "Node 11 — HyperFrames Render": {
+      "main": [[{ "node": "Sub-workflow Output", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "staticData": null,
+  "pinData": {},
+  "id": "vivid-chapter-subworkflow-v45",
+  "meta": {
+    "instanceId": "vivid-studio-local",
+    "templateCredsSetupCompleted": true
+  },
+  "tags": [
+    { "name": "vivid" },
+    { "name": "v4.5" },
+    { "name": "sub-workflow" },
+    { "name": "chapter" }
+  ],
+  "_vivid_meta": {
+    "version": "5.0.0",
+    "description": "Chapter Sub-workflow V5.0 — V4.5 기반 + 멀티 포맷 API 라우팅(Pexels/Pixabay) + solid_color 폴백. Node 4가 source_api 필드로 분기, IF→Switch→HTTP→Result Handler→Merge 라우팅.",
+    "pipeline_flow": "Trigger → [Node 2 Rhubarb ∥ Node 3→4 Gemini] → Merge → Node 5 Split → Node 6 Switch(4분기) → Node 7 Payload → IF(Cache) → [IF(API Route) → Switch(Pexels/Pixabay) → HTTP → Result Handler | HTTP ComfyUI → Wait] → Merge → Node 9 Packager → Node 9.5 Archiver → Node 10 Assembler → Node 11 Renderer → Output",
+    "gpu_cpu_pipelining": {
+      "strategy": "Master Workflow가 Sub-workflow 큐를 모니터링하여 N 챕터 Node 11(CPU) + N+1 챕터 Node 7(GPU) 동시 실행",
+      "constraint": "GPU 동종 병렬 금지 (VRAM 8.9GB 한계). ComfyUI는 순차 Batch size 1",
+      "effect": "GPU 에셋 생성 + CPU 영상 렌더링 교차로 최소 1시간 단축"
+    },
+    "env_requirements": {
+      "NODE_FUNCTION_ALLOW_BUILTIN": "*",
+      "TELEGRAM_CHAT_ID": "에러 알림 수신 Telegram 채팅 ID",
+      "PEXELS_API_KEY": "Pexels API 키 (V5.0 b_roll_video 비디오 검색용)",
+      "PIXABAY_API_KEY": "Pixabay API 키 (V5.0 real_photo 이미지 검색용)"
+    },
+    "node_code_files": {
+      "Node 3 — Director (Gemini)": "n8n_workflow/nodes/node3_director_prompt.js",
+      "Node 4 — Asset Prompt (Gemini)": "n8n_workflow/nodes/node4_asset_prompt.js",
+      "Node 7 — ComfyUI Payload": "n8n_workflow/nodes/node7_comfyui_payload.js",
+      "Node 9 — Asset Packager": "n8n_workflow/nodes/node9_asset_packager.js",
+      "Node 9.5 — Asset Archiver": "n8n_workflow/nodes/node9_5_asset_archiver.js",
+      "Node 10 — Master Assembler": "n8n_workflow/nodes/node10_master_assembler.js",
+      "Node 11 — HyperFrames Render": "n8n_workflow/nodes/node11_cinematic_renderer.js"
+    }
+  }
+}

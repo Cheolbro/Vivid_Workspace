@@ -1,112 +1,88 @@
-# Global rule [Hybrid Coding Protocol]
-
-- **Role:** Claude(Architect/Reviewer) & Gemini CLI(Builder).
-
-## 위임 판단 기준
-
-- **Gemini 위임 (Pro 모델):** boilerplate 위주의 **신규 파일 생성**만 해당.
-- **Claude 직접:** 기존 파일 수정은 줄 수 무관 항상 Claude 직접. 로직 판단이 필요한 신규 파일도 Claude 직접.
-
-> 이 프로젝트 규모에서 Gemini가 실질적으로 유효한 케이스는 boilerplate 신규 파일 생성뿐이다.
-> 기존 파일 수정에 Gemini를 쓰면 escape 오염 등 실수 위험이 오히려 비용을 높인다.
-
-## Workflow (Gemini 위임 시 — 신규 파일 생성만)
-
-1. `.claude_instruction.json` 작성 (Claude 직접). `verify_after` 검증 명령어 포함.
-2. 실행:
-   ```bash
-   cat GEMINI_CONTEXT.md .claude_instruction.json | gemini --yolo --model gemini-2.5-pro -p "다음 JSON 지시사항대로 코딩해줘. 완료 후 verify_after 명령어를 실행하고, 실패 시 에러를 수정한 뒤 재실행. 통과할 때까지 최대 2회 반복."
-   ```
-3. `git diff`로 변경사항 검수 (escape 문자 오염 여부 확인 포함) 후 `git add .` 수행.
-4. Gemini 실패(429/오류) 시: Claude가 직접 수행.
-
-- **Cleanup:** 작업 완료 후 생성된 `.json` 파일 삭제.
-
 # Vivid 프로젝트 마스터 가이드: 유튜브 영상편집 자동화 GUI 프로그램
 
 ## 1. 프로젝트 목표
 
-- 목표 : 대상: 유튜브 영상 제작 반자동화 GUI 프로그램 구축.
-- 스택: PySide6(GUI) + Remotion(Alpha FX) + Vrew(Final Assembly).
-- 철학: Human-in-the-loop (단계별 승인 및 검수).
+- **목표:** 유튜브 영상 제작 반자동화 GUI 프로그램 구축.
+- **스택:** PySide6(GUI) + HyperFrames(슬라이드 렌더링, 주력) + Remotion(레거시 백업) + Vrew(최종 조립).
+- **철학:** Human-in-the-loop (단계별 승인 및 검수).
 
-## 2. 하네스 엔지니어링 (Harness Engineering) 필수 적용
+## 2. 파이프라인 구조
 
-클로드는 코드를 작성할 때 다음의 오류 방지 및 검증 로직을 반드시 포함해야 합니다.
+4단계 스텝 위젯 (`main.py` → `QStackedWidget`):
 
-1.  **무결성 + 파일명 정규화:** 업로드 파일 0바이트/포맷 유효성 즉시 검사. 에러 시 상태창 적색 출력.
-    - **파일명 자동 정규화(Normalization):** `.vrew`, `.mp3`, `.srt`, `.json` 소스 파일은 업로드 경로(Drag & Drop / 버튼)에 관계없이 반드시 표준 파일명(`원본.vrew`, `TTS.mp3`, `Subtitle.srt`, `remotion_plan.json`)으로 변환하여 저장한다. 동일 파일명 존재 시 경고 없이 Overwrite.
-    - **에셋 교체 시에도 동일하게 적용:** `AssetManagerDialog`의 수동 추가/교체 모드에서도 0바이트 파일은 즉시 거부하고 에러 표시. 확장자 검증(이미지/영상 구분)도 함께 수행.
-2.  **FX 자동화:** src/components/fx/ 변경 시 fx_catalog.md 즉시 업데이트.
-    - Custom 요청 시: 컴포넌트 코딩 → 카탈로그 등재 → JSON Props 역주입 필수.
-    - 카탈로그 업데이트 시 `invalidate_cache()`(utils/fx_gallery.py) 반드시 호출하여 갤러리 캐시 초기화.
-3.  **스마트 렌더:** JSON Diff-Check 기반 부분 렌더링. 변경된 요소만 타겟팅 추출.
-4.  **Vrew 보호:** 원본.vrew 직접 수정 금지. 최종\_vN.vrew로 복제 후 조립.
-    - project.json 내 기존 files[] 절대 경로는 `_normalize_file_paths()` 함수로 상대 경로 자동 변환.
-5.  **환경 진단:** 앱 시작 시 `HealthCheckDialog`(utils/health_check.py)가 자동 실행되어
-    node / ffmpeg / remotion / node_modules 설치 여부를 점검. 미설치 시 npm install 버튼 제공.
+| Step | 파일             | 역할                                      |
+| ---- | ---------------- | ----------------------------------------- |
+| 1    | `steps/step1.py` | 프로젝트 생성 / 템플릿 복제               |
+| 2    | `steps/step2.py` | 대본 파싱 → 슬라이드 기획안               |
+| 3    | `steps/step3.py` | 에셋 임포트, PDF 스토리보드, SRT 타임라인 |
+| 4    | `steps/step4.py` | HyperFrames 편집/렌더 → Vrew 조립         |
 
-## 3. 추가 시스템 (2026-04 구현)
+보조 모듈: `utils/hf_renderer.py`(렌더), `utils/hf_editor.py`(편집 UI), `utils/step4_workers.py`(비동기 워커).
 
-아래 시스템은 향후 유지보수 시 변경 금지 또는 연동 필수입니다.
+## 3. Step 4 — 핵심 워크플로우
 
-### 3-A. FX 즐겨찾기 시스템 (`utils/fx_gallery.py`)
+### 3-A. HyperFrames 모듈 (주력)
 
-- `_catalog_cache` — 모듈 레벨 변수. 최초 1회 `_parse_catalog()` 파싱 후 재사용 (메모리 캐시).
-- `invalidate_cache()` — FX 카탈로그 변경 시 반드시 호출하여 캐시 무효화.
-- `_update_favorites()` — fx_catalog.md 파일 최상단 `## 즐겨찾기 (Favorites)` 섹션을 정규식으로 교체.
-- 갤러리 팝업 진입점: `FxGalleryDialog(CATALOG_PATH, parent=self)`.
+- **렌더 엔진:** `utils/hf_renderer.py` — `slide_NN.html` + delta JSON → temp `index.html` → hyperframes CLI → `slide_NN.webm`
+- **편집 UI:** `utils/hf_editor.py` — WebEngine 기반, GSAP 인터셉션, delta JSON 저장.
+- **HyperFrames 바이너리 경로 우선순위:**
+  1. 프로젝트 로컬: `project/hyperframes/node_modules/.bin/hyperframes.cmd`
+  2. 템플릿 폴백: `Project_templete/hyperframes/node_modules/.bin/hyperframes.cmd`
+- HyperFrames 안정 가동 확인 후 Remotion 모듈 폐기 예정.
 
-### 3-B. Gemini API 연동 (`steps/step4.py > GeminiWorker`)
+### 3-B. Remotion 모듈 (레거시 백업 전용)
 
-- 모델: `gemini-2.5-flash` (google-generativeai 라이브러리 사용).
-- API Key: `config.json` (workspace 루트) `gemini_api_key` 필드에 평문 저장.
-- 입력: `project_dir/input/script_body_slide.txt` (슬라이드별 대본 원문).
-- 출력: 슬라이드별 핵심 키워드 + 연출 분위기 요약 → QClipboard 자동 복사.
-- 라이브러리 미설치 시 ImportError를 사용자 친화적 메시지로 안내.
+- `npx remotion studio` / `npx remotion render` 방식 (루트에 remotion/ 폴더 없음).
+- **신규 기능 개발 대상 아님.** 기존 프로젝트 호환성 유지 목적만.
+- 상세 규칙: `remotion_spec.md` 참조.
 
-### 3-C. Vrew 에셋 상대 경로 규칙 (`utils/backend_ext.py > _normalize_file_paths`)
+### 3-C. 렌더링 완료 리포트
 
-- `assemble_vrew()` 호출 시 기존 `project.json`의 `files[]` 내
-  `filePath / localPath / sourcePath / path` 필드가 절대 경로인 경우
-  자동으로 `Path(val).name` (파일명만) 으로 변환.
-- 신규 추가 에셋: `"fileLocation": "IN_MEMORY"` 방식 유지.
+- 완료 시 `C_HIGHLIGHT`(골드)로 상태창 출력: 총 소요시간 / 신규 렌더 수 / 캐시 재사용 수 / 전체 합계.
 
-### 3-D. 렌더링 완료 리포트
+## 4. 하네스 엔지니어링 (Harness Engineering) 필수 적용
 
-- 렌더링 완료 시 `C_HIGHLIGHT`(골드) 색상으로 상태창에 아래 정보 출력:
-  - 총 소요 시간 / 신규 렌더 FX 수 / 캐시 재사용 수 / 전체 FX 합계
+1. **무결성 + 파일명 정규화:** 업로드 파일 0바이트/포맷 유효성 즉시 검사. 에러 시 상태창 적색 출력.
+   - `.vrew`, `.mp3`, `.srt`, `.json` 소스 파일 → 표준 파일명(`원본.vrew`, `TTS.mp3`, `Subtitle.srt`, `remotion_plan.json`)으로 자동 변환. Overwrite 경고 없음.
+   - `AssetManagerDialog` 수동 추가/교체: 0바이트 즉시 거부, 확장자 검증(이미지/영상).
+2. **FX 자동화:** `fx_catalog.txt` 변경 시 `invalidate_cache()`(`utils/fx_gallery.py`) 반드시 호출.
+   - Custom FX: 컴포넌트 코딩 → 카탈로그 등재 → JSON Props 역주입 필수.
+3. **스마트 렌더:** JSON Diff-Check 기반 부분 렌더링 (변경 슬라이드만 타겟).
+4. **Vrew 보호:** `원본.vrew` 직접 수정 금지. `최종_vN.vrew`로 복제 후 조립.
+   - `utils/backend_ext.py > _normalize_file_paths()`: `project.json files[]` 절대 경로 → `Path(val).name` 자동 변환.
+5. **환경 진단:** 앱 시작 시 `HealthCheckDialog`(`utils/health_check.py`) 자동 실행 — node / ffmpeg / hyperframes / node_modules 점검.
 
-### 3-E. 글로벌 FX 라이브러리 및 공유 에셋 통합 아키텍처 (2026-04 구현)
+## 5. 보조 시스템
 
-> **핵심 원칙:** 모든 공용 리소스(영상, 시각효과 코드)는 `shared_assets/` 폴더 내에서 통합 관리된다.
-> FX 코드는 **심볼릭 링크**를 통해 모든 프로젝트가 단일 원본을 공유하며, 용량 낭비 없이 자산화한다.
+### 5-A. FX 갤러리 (`utils/fx_gallery.py`)
 
-- **경로 상수** (`utils/theme.py`):
-  - `SHARED_FX_DIR = SHARED_ASSETS_DIR / "shared_fx"` — 글로벌 FX TSX 원본 저장 위치.
-  - 앱 시작 시 `shared_fx/` 폴더가 없으면 자동 생성 (`mkdir`).
-- **프로젝트 생성 시 심볼릭 링크** (`steps/step1.py > _setup_fx_symlink()`):
-  - `copytree` 직후 프로젝트 내 `remotion/src/components/fx/` 폴더를 삭제하고 `SHARED_FX_DIR`를 가리키는 심볼릭 링크로 대체.
-  - Windows 권한 오류 시 폴백(복사 방식)으로 진행하고 개발자 모드 활성화 안내.
-- **Custom FX 저장** (`steps/step4.py > _process_custom_fx()`):
-  - TSX 파일은 반드시 `SHARED_FX_DIR` 에 저장. 프로젝트 내부에 직접 저장하지 않는다.
-  - `fx_catalog.md` 경로 표기는 `src/components/fx/` 유지 (Remotion import 경로 = 심볼릭 링크 경유).
-- **Git 추적** (`shared_assets/.gitignore`):
-  - 미디어 바이너리(`.mp4`, `.mp3` 등) → 추적 제외.
-  - `shared_fx/*.tsx` → `!` 예외 규칙으로 Git 추적 허용 (FX 코드는 소스 자산).
+- `_catalog_cache` — 모듈 레벨, 최초 1회 파싱 후 재사용. `invalidate_cache()`로 무효화.
+- 갤러리 팝업: `FxGalleryDialog(CATALOG_PATH, parent=self)`.
+- 카탈로그 파일: `fx_catalog.txt`.
 
-### 3-F. 기획 자동화 엔진: VIVID Radar (2026-04 구현)
+### 5-B. Gemini CLI (`utils/step4_workers.py > GeminiWorker`, `utils/editor_server.py`)
 
-- **정의**: A1(채널 발굴), A2(주제 탐색), A3(제목 최적화)가 통합된 지능형 기획 파이프라인.
-- **격리 원칙**: 해당 모듈은 `vivid_radar/` 폴더 내에 완벽히 격리된 모노레포 구조로 개발한다.
-- **최우선 참조**: `vivid_radar/` 내부의 모든 코드 작성 및 로직 수정 시, 해당 폴더 안의 **`radar_spec.md`**를 마스터 가이드보다 높은 우선순위의 'Source of Truth'로 간주하여 참조한다.
+- `@google/gemini-cli` npm 글로벌 패키지 (`npm install -g @google/gemini-cli`). Python 라이브러리 아님.
+- Windows: `node.exe + gemini.js` 직접 호출 (cmd.exe 8191자 인수 제한 우회). 바이너리 탐색: 3계층 폴백 (`shutil.which` → AppData/npm → `require.resolve`).
+- 인증: CLI 자체 OAuth (별도 API Key 불필요).
+- 사용처: `GeminiWorker`(슬라이드 키워드 요약 → QClipboard), `editor_server.py > api_chat`(편집기 AI 채팅).
 
-## 4. 세부 매뉴얼 참조(External spec)
+### 5-C. 공유 에셋 (`shared_assets/`)
 
-작업의 종류에 따라 아래 문서를 열어서(읽고) 참조하십시오.
+- `shared_assets/shared_fx/` — 글로벌 FX TSX 원본 (`utils/theme.py > SHARED_FX_DIR`).
+- `shared_fx/*.tsx` → Git 추적. 미디어 바이너리(`.mp4`, `.mp3`) → 추적 제외.
 
-- UI/UX: ui_ux_spec.md (화면/버전 로직/테마 컬러)
-- Backend: backend_rules.md (파싱/Watchdog/Vrew 조립 로직)
-- Remotion: remotion_spec.md (디자인/CSS/투명 렌더링 규칙)
-- FX List: fx_catalog.md (현재 가용한 효과 명세)
-- Radar Spec: vivid_radar/radar_spec.md (기획 자동화 엔진 A1, A2, A3 상세 명세)
+### 5-D. VIVID Radar (`vivid_radar/`)
+
+- A1(채널 발굴) / A2(주제 탐색) / A3(제목 최적화) 통합 기획 파이프라인.
+- **`vivid_radar/radar_spec.md`** = 이 파일보다 높은 우선순위의 Source of Truth.
+
+## 6. 세부 매뉴얼 참조
+
+| 주제              | 파일                        |
+| ----------------- | --------------------------- |
+| UI/UX             | `ui_ux_spec.md`             |
+| Backend           | `backend_rules.md`          |
+| Remotion (레거시) | `remotion_spec.md`          |
+| FX 목록           | `fx_catalog.txt`            |
+| Radar             | `vivid_radar/radar_spec.md` |

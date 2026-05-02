@@ -1,0 +1,160 @@
+{
+  "$schema_version": "1.0.0",
+  "last_updated": "2026-04-30",
+  "description": "정보성 채널용 OpenPose 포즈 라이브러리 (과제 7). assets/poses/<pose_id>.png(1024x1024 OpenPose skeleton)에 매칭. Node 3가 이 카탈로그를 참조해 pose 결정, Node 7 ControlNet 분기(과제 12)가 LoadImage로 주입.",
+  "poses_root": "assets/poses/",
+  "ratio_policy": {
+    "static": 0.7,
+    "action": 0.2,
+    "auto": 0.1,
+    "action_max_per_chapter": 5,
+    "_comment": "Node 3 validatePlan이 이 비율을 강제. action 70%/20%/10% 룰 위반 시 검증 실패."
+  },
+  "applicable_camera_keys": ["close_up", "medium", "wide", "low_angle", "high_angle"],
+  "applicable_character_angle_keys": ["front", "side", "back"],
+  "fallback_pose_id": "pose_anchor_neutral",
+  "_fallback_comment": "Node 7 ControlNet 분기에서 pose_id가 character variant와 미매칭 시 fallback (보통 front_neutral).",
+  "poses": {
+    "pose_anchor_neutral": {
+      "display_name": "앵커 기본 자세",
+      "category": "static",
+      "file_path": "assets/poses/pose_anchor_neutral.png",
+      "usage_hint": "스튜디오 정면 차렷 / 도입·전환부 기본 컷",
+      "applicable_camera": ["close_up", "medium"],
+      "applicable_character_angle": ["front"],
+      "tags": ["anchor", "neutral", "default", "front"]
+    },
+    "explaining_open": {
+      "display_name": "양손 펼쳐 설명",
+      "category": "static",
+      "file_path": "assets/poses/explaining_open.png",
+      "usage_hint": "사실 나열 / 양립 가능한 두 옵션 제시",
+      "applicable_camera": ["medium", "wide"],
+      "applicable_character_angle": ["front"],
+      "tags": ["explaining", "open_hands", "informative"]
+    },
+    "explaining_chop": {
+      "display_name": "손날 단언적 제스처",
+      "category": "static",
+      "file_path": "assets/poses/explaining_chop.png",
+      "usage_hint": "단호한 결론 / 명확한 구분 제시",
+      "applicable_camera": ["close_up", "medium"],
+      "applicable_character_angle": ["front", "side"],
+      "tags": ["chop", "decisive", "boundary"]
+    },
+    "finger_count": {
+      "display_name": "손가락 카운트",
+      "category": "static",
+      "file_path": "assets/poses/finger_count.png",
+      "usage_hint": "1·2·3 단계 열거 / 핵심 포인트 카운트",
+      "applicable_camera": ["close_up", "medium"],
+      "applicable_character_angle": ["front"],
+      "tags": ["count", "enumerate", "list"]
+    },
+    "thoughtful": {
+      "display_name": "사색 자세",
+      "category": "static",
+      "file_path": "assets/poses/thoughtful.png",
+      "usage_hint": "턱에 손 / 의문 제기·심사숙고 컷",
+      "applicable_camera": ["close_up", "medium"],
+      "applicable_character_angle": ["front", "side"],
+      "tags": ["thinking", "contemplate", "question"]
+    },
+    "typing": {
+      "display_name": "키보드 타이핑",
+      "category": "static",
+      "file_path": "assets/poses/typing.png",
+      "usage_hint": "조사·작업 중 / 데이터 입력 묘사",
+      "applicable_camera": ["medium", "wide"],
+      "applicable_character_angle": ["front", "side"],
+      "tags": ["typing", "work", "research"]
+    },
+    "glasses_adjust": {
+      "display_name": "안경 조정",
+      "category": "static",
+      "file_path": "assets/poses/glasses_adjust.png",
+      "usage_hint": "분석적 시선 강조 / 디테일 주목 컷",
+      "applicable_camera": ["close_up"],
+      "applicable_character_angle": ["front", "side"],
+      "tags": ["glasses", "analytical", "scrutiny"]
+    },
+    "listening": {
+      "display_name": "경청 자세",
+      "category": "static",
+      "file_path": "assets/poses/listening.png",
+      "usage_hint": "인터뷰 듣는 측면 / 청취 강조",
+      "applicable_camera": ["medium"],
+      "applicable_character_angle": ["side"],
+      "tags": ["listening", "attentive", "interview"]
+    },
+    "pose_pointing_data": {
+      "display_name": "차트·데이터 지시",
+      "category": "action",
+      "file_path": "assets/poses/pose_pointing_data.png",
+      "usage_hint": "data_layer 차트·지도 강조 / 수치 지시",
+      "applicable_camera": ["medium", "wide"],
+      "applicable_character_angle": ["side"],
+      "tags": ["pointing", "data", "chart", "emphasis"]
+    },
+    "pointing_audience": {
+      "display_name": "관객 지시",
+      "category": "action",
+      "file_path": "assets/poses/pointing_audience.png",
+      "usage_hint": "시청자 직접 호명 / 강력한 메시지 전달",
+      "applicable_camera": ["close_up", "medium"],
+      "applicable_character_angle": ["front"],
+      "tags": ["pointing", "audience", "direct_address"]
+    },
+    "emphasis_fist": {
+      "display_name": "주먹 강조",
+      "category": "action",
+      "file_path": "assets/poses/emphasis_fist.png",
+      "usage_hint": "결의·분노·강한 단언 / 핵심 키워드 강조",
+      "applicable_camera": ["close_up", "medium"],
+      "applicable_character_angle": ["front", "side"],
+      "tags": ["fist", "emphasis", "determination", "anger"]
+    },
+    "doc_present": {
+      "display_name": "문서 들고 발표",
+      "category": "action",
+      "file_path": "assets/poses/doc_present.png",
+      "usage_hint": "보고서·증거 제시 / 문서 기반 발표",
+      "applicable_camera": ["medium"],
+      "applicable_character_angle": ["front"],
+      "tags": ["document", "present", "evidence"]
+    },
+    "concerned_lean": {
+      "display_name": "우려·기울임",
+      "category": "action",
+      "file_path": "assets/poses/concerned_lean.png",
+      "usage_hint": "심각한 우려 표현 / 청자에게 다가서는 컷",
+      "applicable_camera": ["close_up", "medium"],
+      "applicable_character_angle": ["front"],
+      "tags": ["concerned", "lean_in", "serious"]
+    },
+    "arms_crossed_authority": {
+      "display_name": "팔짱 권위",
+      "category": "action",
+      "file_path": "assets/poses/arms_crossed_authority.png",
+      "usage_hint": "권위·확신 표현 / 결론부 정리 컷",
+      "applicable_camera": ["medium", "low_angle"],
+      "applicable_character_angle": ["front"],
+      "tags": ["arms_crossed", "authority", "confidence"]
+    },
+    "facepalm_disappointed": {
+      "display_name": "실망 페이스팜",
+      "category": "action",
+      "file_path": "assets/poses/facepalm_disappointed.png",
+      "usage_hint": "어이없음·실망 / 부정적 사례 코멘트",
+      "applicable_camera": ["close_up"],
+      "applicable_character_angle": ["front", "side"],
+      "tags": ["facepalm", "disappointed", "negative"]
+    }
+  },
+  "operator_workflow": {
+    "step_1": "Generate 15 OpenPose skeleton PNGs at 1024x1024 (e.g., via Stable Diffusion ControlNet OpenPose preprocessor or hand-edited).",
+    "step_2": "Save to assets/poses/<pose_id>.png matching the file_path field above.",
+    "step_3": "Verify: each PNG must contain only the OpenPose skeleton (rgb keypoints + bones), transparent background.",
+    "step_4": "Test integration: trigger Node 3 with pose:'<pose_id>' and confirm Node 7 ControlNet branch loads the image."
+  }
+}

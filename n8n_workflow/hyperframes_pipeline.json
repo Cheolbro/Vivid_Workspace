@@ -1,117 +1,201 @@
 {
-  "name": "HyperFrames Pipeline",
+  "name": "VIVID v5.0 — Master Pipeline",
   "nodes": [
     {
-      "id": "node-01-webhook",
-      "name": "Webhook — HyperFrames Trigger",
+      "id": "trigger-webhook",
+      "name": "Webhook — Pipeline Trigger",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [200, 400],
       "parameters": {
         "httpMethod": "POST",
-        "path": "hyperframes",
+        "path": "vivid-pipeline",
         "responseMode": "lastNode",
         "options": {}
       },
-      "webhookId": "hyperframes"
+      "webhookId": "vivid-pipeline"
     },
     {
-      "id": "node-02-load",
+      "id": "node-01-load",
       "name": "Load Files",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [440, 400],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst body = $input.first().json.body || $input.first().json;\nconst projectPath = body.project_path;\nconst assetDir = path.join(projectPath, 'asset');\n\nconst timelinePath = path.join(assetDir, 'base_timeline.json');\nif (!fs.existsSync(timelinePath)) {\n  throw new Error(`base_timeline.json not found: ${timelinePath}`);\n}\n\nconst slides = JSON.parse(fs.readFileSync(timelinePath, 'utf8'));\n\nreturn [{\n  json: {\n    project_path: projectPath,\n    asset_dir: assetDir,\n    slides,\n    slide_count: slides.length\n  }\n}];"
+        "jsCode": "// 과제 26: node1_load_files.js 내용을 여기에 붙여넣기.\n// 코드 본체는 n8n_workflow/nodes/node1_load_files.js에서 관리.\n// Node 1 + Node 1.1 + Node 1.2 통합 (대본 청킹 → 범퍼 분기 → FFmpeg 오디오 분할).\n// 출력: 챕터별 n8n 아이템 배열 (type: INTRO|BUMPER_TRIGGER|CHAPTER).\nthrow new Error('[Master] node1_load_files.js 코드를 이 Code Node에 붙여넣으세요.');"
       }
     },
     {
-      "id": "node-03-analyst",
-      "name": "Run Analysts",
-      "type": "n8n-nodes-base.code",
+      "id": "node-01-filter-bumper",
+      "name": "IF — Bumper Filter",
+      "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [680, 400],
       "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "// ANALYST PROMPT — 이 블록만 수정하여 분석 지시 변경\nconst ANALYST_PROMPT = `당신은 유튜브 영상 연출 전문가입니다.\n제공된 배경 이미지들과 슬라이드 대본을 분석하여 각 슬라이드의 시각 연출 스펙을 JSON으로 출력하세요.\n\n## 분석 기준\n1. 피사체(얼굴/캐릭터) 위치 파악 → 텍스트 배치 시 겹치지 않는 빈 영역(하늘, 여백) 탐색\n2. 분위기와 색상 톤 판단 (dark/light, warm/cold_blue/neutral)\n3. 핵심 구절: 대본에서 가장 짧고 강렬한 1~5개 명사구 (최대 10자). 가장 강조할 단 하나에만 [FX] 태그\n4. 시각 효과: GritShake / VignetteFlash / GlitchSlice / ZoomPulse 중 선택\n5. Ken Burns: zoom-center / pan-right / pan-left / zoom-out / pan-up / pan-down 중 택1\n\n## 좌표계\n캔버스 중앙 (0,0) 기준 · x 범위: -960~+960 · y 범위: -400~+400\n\n## 입력 슬라이드\n{{SLIDES_JSON}}\n\n## 출력 형식 (JSON만, 다른 텍스트 없이)\n{\n  \"slide_01\": {\n    \"subject\": {\"center\": {\"x\": 850, \"y\": 200}, \"bounds\": {\"top\": 50, \"bottom\": 400, \"left\": 600, \"right\": 1100}, \"description\": \"피사체 설명\"},\n    \"mood\": \"긴박감과 충격\",\n    \"color_tone\": {\"brightness\": \"dark\", \"tone\": \"cold_blue\"},\n    \"key_phrases\": [\n      {\"text\": \"[FX] 핵심 구절\", \"x\": -500, \"y\": 280},\n      {\"text\": \"보조 구절\", \"x\": -500, \"y\": 160}\n    ],\n    \"visual_effects\": [{\"name\": \"GritShake\", \"x\": 0, \"y\": 0}],\n    \"ken_burns\": {\"type\": \"zoom-center\", \"reason\": \"이유 설명\"},\n    \"directorial_intent\": \"연출 의도 설명\"\n  }\n}`;\n\nconst ANALYST_BATCH_SIZE = 10;\nconst MAX_RETRIES = 3;\nconst RETRY_WAIT_MS = 15000;\n\nconst { spawn } = require('child_process');\nconst fs = require('fs');\nconst path = require('path');\n\nconst data = $input.first().json;\nconst { slides, asset_dir: assetDir, project_path: projectPath } = data;\n\nfunction bashEscape(str) {\n  return str\n    .replace(/\\\\/g, '\\\\\\\\')\n    .replace(/\"/g, '\\\\\"')\n    .replace(/\\$/g, '\\\\$')\n    .replace(/`/g, '\\\\`');\n}\n\nfunction runGemini(prompt, timeoutMs) {\n  return new Promise((resolve, reject) => {\n    const outBufs = [], errBufs = [];\n    const escaped = bashEscape(prompt);\n    const proc = spawn('C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe', ['-c', `gemini --yolo \"${escaped}\"`], { windowsHide: true });\n    const timer = setTimeout(() => { proc.kill(); reject(new Error('timeout')); }, timeoutMs);\n    proc.stdout.on('data', d => outBufs.push(d));\n    proc.stderr.on('data', d => errBufs.push(d));\n    proc.on('close', code => {\n      clearTimeout(timer);\n      if (code === 0) resolve(Buffer.concat(outBufs).toString('utf8'));\n      else reject(new Error(`exit ${code}: ${Buffer.concat(errBufs).toString('utf8').slice(0, 200)}`));\n    });\n    proc.on('error', e => { clearTimeout(timer); reject(e); });\n  });\n}\n\nasync function runWithRetry(prompt, retries, timeoutMs) {\n  let lastErr;\n  for (let i = 0; i < retries; i++) {\n    try { return await runGemini(prompt, timeoutMs); } catch (e) {\n      lastErr = e;\n      if (i < retries - 1) await new Promise(r => setTimeout(r, RETRY_WAIT_MS));\n    }\n  }\n  throw lastErr;\n}\n\nconst batches = [];\nfor (let i = 0; i < slides.length; i += ANALYST_BATCH_SIZE) {\n  batches.push(slides.slice(i, i + ANALYST_BATCH_SIZE));\n}\n\nconst batchPromises = batches.map((batch, bIdx) => {\n  const label = String(bIdx + 1).padStart(2, '0');\n  const slidesForPrompt = batch.map(s => ({\n    slide_id: s.slide_id, full_text: s.full_text,\n    duration: s.duration, bg_image: s.bg_image\n  }));\n  const promptContent = ANALYST_PROMPT.replace(\n    '{{SLIDES_JSON}}', JSON.stringify(slidesForPrompt, null, 2)\n  );\n  const imagePaths = batch\n    .map(s => path.join(assetDir, s.bg_image).replace(/\\\\/g, '/'))\n    .filter(p => fs.existsSync(p));\n  const imageRefs = imagePaths.map(p => `${p} 파일을 읽어서 분석에 활용해줘.`).join('\\n');\n  const fullPrompt = imageRefs + '\\n\\n' + promptContent;\n\n  return runWithRetry(fullPrompt, MAX_RETRIES, 300000)\n    .then(stdout => ({ label, batch, stdout, error: null }))\n    .catch(e  => ({ label, batch, stdout: null, error: e.message }));\n});\n\nconst results = await Promise.all(batchPromises);\n\nconst analystResults = {};\nconst failedBatches = [];\n\nfor (const { label, batch, stdout, error } of results) {\n  if (error) {\n    failedBatches.push({ batch_id: `analyst_${label}`, error });\n    batch.forEach(s => { analystResults[s.slide_id] = null; });\n    continue;\n  }\n  try {\n    const m = stdout.match(/\\{[\\s\\S]*\\}/);\n    if (m) Object.assign(analystResults, JSON.parse(m[0]));\n  } catch (_) {\n    batch.forEach(s => { analystResults[s.slide_id] = null; });\n  }\n}\n\nreturn [{\n  json: {\n    project_path: projectPath,\n    asset_dir: assetDir,\n    slides: data.slides,\n    analyst_results: analystResults,\n    analyst_failed: failedBatches\n  }\n}];"
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.type }}",
+              "operation": "equals",
+              "value2": "BUMPER_TRIGGER"
+            }
+          ]
+        }
       }
     },
     {
-      "id": "node-04-generator",
-      "name": "Run Generators",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [920, 400],
+      "id": "node-01-bumper-passthrough",
+      "name": "Bumper — Concat Entry",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [920, 260],
       "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "// GENERATOR PROMPT — 이 블록만 수정하여 HTML 생성 지시 변경\nconst GENERATOR_PROMPT = `당신은 유튜브 영상 제작 도구를 위한 HTML+GSAP 애니메이션 전문가입니다.\n아래 슬라이드 스펙에 따라 각 슬라이드의 완전한 standalone HTML 파일을 생성하세요.\n\n## 기술 상수 (절대 변경 금지)\n- Canvas: 1920×1080 px (body/html: margin:0, padding:0, overflow:hidden)\n- 클래스 명: .bg / .text-1 / .text-2 / .text-3 고정\n- 좌표: left: calc(50% + Xpx); top: calc(50% + Ypx); (캔버스 중앙 기준)\n- GSAP CDN: https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js\n- #composition div에 data-composition-id=\"slide-NN\" 필수\n- data-duration 값은 해당 슬라이드의 duration(초) 사용\n- 배경 이미지 경로: ../asset/IMAGE_FILENAME (상대경로, 절대경로 금지)\n- Ken Burns는 .bg 요소에 GSAP으로 구현 (scale 1.0 → 1.1 등)\n\n## 텍스트 애니메이션 가이드\n- [FX] 태그 구절: 더 크고 화려한 효과 (scale pulse, color glow, 강조색)\n- 일반 구절: opacity 0→1 + x/y 방향 슬라이드, 0.4~0.6s duration\n\n## 출력 규칙\n- 슬라이드별로 개별 HTML 블록 출력 (마크다운 코드펜스 절대 금지)\n- 반드시 아래 마커 형식 사용:\n  ===HTML_START:slide_NN===\n  <!DOCTYPE html>...</html>\n  ===HTML_END:slide_NN===\n\n## 슬라이드 스펙\n{{SLIDE_SPEC_JSON}}`;\n\nconst GENERATOR_BATCH_SIZE = 5;\nconst WAVE_SIZE = 5;\nconst MAX_RETRIES = 3;\nconst RETRY_WAIT_MS = 15000;\n\nconst { spawn } = require('child_process');\nconst fs = require('fs');\nconst path = require('path');\n\nconst data = $input.first().json;\nconst { slides, asset_dir: assetDir, project_path: projectPath, analyst_results: analystResults } = data;\n\nfunction bashEscape(str) {\n  return str\n    .replace(/\\\\/g, '\\\\\\\\')\n    .replace(/\"/g, '\\\\\"')\n    .replace(/\\$/g, '\\\\$')\n    .replace(/`/g, '\\\\`');\n}\n\nfunction runGemini(prompt, timeoutMs) {\n  return new Promise((resolve, reject) => {\n    const outBufs = [], errBufs = [];\n    const escaped = bashEscape(prompt);\n    const proc = spawn('C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe', ['-c', `gemini --yolo \"${escaped}\"`], { windowsHide: true });\n    const timer = setTimeout(() => { proc.kill(); reject(new Error('timeout')); }, timeoutMs);\n    proc.stdout.on('data', d => outBufs.push(d));\n    proc.stderr.on('data', d => errBufs.push(d));\n    proc.on('close', code => {\n      clearTimeout(timer);\n      if (code === 0) resolve(Buffer.concat(outBufs).toString('utf8'));\n      else reject(new Error(`exit ${code}: ${Buffer.concat(errBufs).toString('utf8').slice(0, 200)}`));\n    });\n    proc.on('error', e => { clearTimeout(timer); reject(e); });\n  });\n}\n\nasync function runWithRetry(prompt, retries, timeoutMs) {\n  let lastErr;\n  for (let i = 0; i < retries; i++) {\n    try { return await runGemini(prompt, timeoutMs); } catch (e) {\n      lastErr = e;\n      if (i < retries - 1) await new Promise(r => setTimeout(r, RETRY_WAIT_MS));\n    }\n  }\n  throw lastErr;\n}\n\nconst batches = [];\nfor (let i = 0; i < slides.length; i += GENERATOR_BATCH_SIZE) {\n  batches.push(slides.slice(i, i + GENERATOR_BATCH_SIZE));\n}\n\nconst htmlOutputs = {};\nconst failedSlides = [];\n\nfor (let wStart = 0; wStart < batches.length; wStart += WAVE_SIZE) {\n  const wave = batches.slice(wStart, wStart + WAVE_SIZE);\n\n  const wavePromises = wave.map((batch, wIdx) => {\n    const globalIdx = wStart + wIdx;\n    const label = String(globalIdx + 1).padStart(2, '0');\n    const batchSpec = batch.map(s => ({\n      slide_id: s.slide_id, bg_image: s.bg_image,\n      duration: s.duration, full_text: s.full_text,\n      analyst_spec: analystResults[s.slide_id] || null\n    }));\n    const promptContent = GENERATOR_PROMPT.replace(\n      '{{SLIDE_SPEC_JSON}}', JSON.stringify(batchSpec, null, 2)\n    );\n    const imagePaths = batch\n      .map(s => path.join(assetDir, s.bg_image).replace(/\\\\/g, '/'))\n      .filter(p => fs.existsSync(p));\n    const imageRefs = imagePaths.map(p => `${p} 파일을 읽어서 분석에 활용해줘.`).join('\\n');\n    const fullPrompt = imageRefs + '\\n\\n' + promptContent;\n\n    return runWithRetry(fullPrompt, MAX_RETRIES, 600000)\n      .then(stdout => ({ label, batch, stdout, error: null }))\n      .catch(e  => ({ label, batch, stdout: null, error: e.message }));\n  });\n\n  const waveResults = await Promise.all(wavePromises);\n\n  for (const { batch, stdout, error } of waveResults) {\n    if (error) {\n      batch.forEach(s => failedSlides.push({\n        slide_id: s.slide_id, attempts: MAX_RETRIES, error_cause: error\n      }));\n      continue;\n    }\n    const pattern = /===HTML_START:(slide_\\d+)===([\\s\\S]*?)===HTML_END:\\1===/g;\n    let match;\n    while ((match = pattern.exec(stdout)) !== null) {\n      htmlOutputs[match[1]] = match[2].trim();\n    }\n  }\n}\n\nreturn [{\n  json: {\n    project_path: projectPath,\n    asset_dir: assetDir,\n    html_outputs: htmlOutputs,\n    failed_slides: failedSlides\n  }\n}];"
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            { "name": "concat_type", "value": "bumper", "type": "string" },
+            { "name": "concat_path", "value": "={{ $json.bumper_path }}", "type": "string" },
+            { "name": "chapter_id", "value": "={{ $json.chapter_id }}", "type": "string" },
+            { "name": "chapter_index", "value": "={{ $json.chapter_index }}", "type": "number" }
+          ]
+        }
       }
     },
     {
-      "id": "node-05-save",
-      "name": "Save Output",
+      "id": "node-dispatch-chapter",
+      "name": "Execute Sub-workflow (Chapter)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [920, 540],
+      "parameters": {
+        "workflowId": "={{ $env.VIVID_CHAPTER_SUBWORKFLOW_ID }}",
+        "options": {}
+      },
+      "_comment": "챕터별 Sub-workflow 비동기 디스패치. 환경변수 VIVID_CHAPTER_SUBWORKFLOW_ID에 pipeline_chapter 워크플로우 ID 설정 필요."
+    },
+    {
+      "id": "node-aggregate",
+      "name": "Aggregate — All Chapters",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1200, 400],
+      "parameters": {
+        "mode": "append"
+      },
+      "_comment": "Bumper passthrough + 모든 챕터 Sub-workflow 결과를 합침. chapter_index 기준 정렬 후 Node 12로."
+    },
+    {
+      "id": "node-sort-chapters",
+      "name": "Sort by Chapter Index",
+      "type": "n8n-nodes-base.sort",
+      "typeVersion": 1,
+      "position": [1440, 400],
+      "parameters": {
+        "sortFieldsUi": {
+          "sortField": [
+            {
+              "fieldName": "chapter_index",
+              "order": "ascending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-12-merge",
+      "name": "Node 12 — Final Merge",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1160, 400],
+      "position": [1680, 400],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst data = $input.first().json;\nconst { project_path: projectPath, asset_dir: assetDir, html_outputs: htmlOutputs, failed_slides: failedSlides } = data;\n\nconst compositionsJsonPath = path.join(assetDir, 'hyperframes_compositions.json');\nfs.writeFileSync(compositionsJsonPath, JSON.stringify(htmlOutputs, null, 2), 'utf8');\n\nconst compositionsDir = path.join(projectPath, 'hyperframes', 'compositions');\nfs.mkdirSync(compositionsDir, { recursive: true });\n\nconst savedFiles = [];\nfor (const [slideId, html] of Object.entries(htmlOutputs)) {\n  fs.writeFileSync(path.join(compositionsDir, `${slideId}.html`), html, 'utf8');\n  savedFiles.push(`${slideId}.html`);\n}\n\nconst report = {\n  timestamp: new Date().toISOString(),\n  success: Object.keys(htmlOutputs),\n  failed: failedSlides\n};\nfs.writeFileSync(path.join(assetDir, 'hf_render_report.json'), JSON.stringify(report, null, 2), 'utf8');\n\nreturn [{\n  json: {\n    status: 'done',\n    success_count: savedFiles.length,\n    failed_count: failedSlides.length,\n    saved_html_files: savedFiles,\n    compositions_json: compositionsJsonPath,\n    failed_slides: failedSlides\n  }\n}];"
+        "jsCode": "// 과제 기구현: n8n_workflow/nodes/node12_final_merge.js 내용 붙여넣기.\n// FFmpeg concat + 인코딩 지문 분산 (CRF 19-21, GOP 90-150, h264_qsv).\n// 입력: 정렬된 챕터/범퍼 아이템. concat_type='bumper'→bumper.mp4, 'chapter'→render/chapter_NN.mp4.\nthrow new Error('[Master] node12_final_merge.js 코드를 이 Code Node에 붙여넣으세요.');"
+      }
+    },
+    {
+      "id": "node-13-vrew",
+      "name": "Node 13 — Vrew Builder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 400],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// 과제 기구현: n8n_workflow/nodes/node13_vrew_builder.js 내용 붙여넣기.\n// 원본 .vrew에 비디오 트랙 주입 → 최종_hf_vN.vrew 패키징.\n// EF-8: 반드시 모든 챕터 완료 후 1회만 호출.\nthrow new Error('[Master] node13_vrew_builder.js 코드를 이 Code Node에 붙여넣으세요.');"
+      }
+    },
+    {
+      "id": "node-error-telegram",
+      "name": "Error — Telegram Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1920, 640],
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "🚨 VIVID Pipeline 실패\n\n{{ $json.error_message || '알 수 없는 오류' }}\n\n챕터: {{ $json.chapter_id || 'N/A' }}\n시간: {{ $now.toISO() }}",
+        "additionalFields": {}
       }
     }
   ],
   "connections": {
-    "Webhook — HyperFrames Trigger": {
-      "main": [
-        [
-          {
-            "node": "Load Files",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Webhook — Pipeline Trigger": {
+      "main": [[{ "node": "Load Files", "type": "main", "index": 0 }]]
     },
     "Load Files": {
+      "main": [[{ "node": "IF — Bumper Filter", "type": "main", "index": 0 }]]
+    },
+    "IF — Bumper Filter": {
       "main": [
-        [
-          {
-            "node": "Run Analysts",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Bumper — Concat Entry", "type": "main", "index": 0 }],
+        [{ "node": "Execute Sub-workflow (Chapter)", "type": "main", "index": 0 }]
       ]
     },
-    "Run Analysts": {
-      "main": [
-        [
-          {
-            "node": "Run Generators",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Bumper — Concat Entry": {
+      "main": [[{ "node": "Aggregate — All Chapters", "type": "main", "index": 0 }]]
     },
-    "Run Generators": {
-      "main": [
-        [
-          {
-            "node": "Save Output",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Execute Sub-workflow (Chapter)": {
+      "main": [[{ "node": "Aggregate — All Chapters", "type": "main", "index": 1 }]]
+    },
+    "Aggregate — All Chapters": {
+      "main": [[{ "node": "Sort by Chapter Index", "type": "main", "index": 0 }]]
+    },
+    "Sort by Chapter Index": {
+      "main": [[{ "node": "Node 12 — Final Merge", "type": "main", "index": 0 }]]
+    },
+    "Node 12 — Final Merge": {
+      "main": [[{ "node": "Node 13 — Vrew Builder", "type": "main", "index": 0 }]]
     }
   },
   "active": true,
   "settings": {
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
   },
-  "id": "hyperframes-pipeline-001",
+  "staticData": null,
+  "pinData": {},
+  "id": "vivid-master-pipeline-v45",
   "meta": {
-    "instanceId": "vivid-studio-local"
+    "instanceId": "vivid-studio-local",
+    "templateCredsSetupCompleted": true
+  },
+  "tags": [{ "name": "vivid" }, { "name": "v4.5" }, { "name": "master" }],
+  "_vivid_meta": {
+    "version": "5.0.0",
+    "description": "Master Pipeline — Node 1/1.1/1.2 입구 → IF(Bumper) 분기 → 챕터별 Sub-workflow 비동기 디스패치 → Aggregate → Node 12 Merge → Node 13 Vrew. GPU/CPU 이종 파이프라이닝은 Sub-workflow 디스패치 타이밍으로 구현.",
+    "env_requirements": {
+      "NODE_FUNCTION_ALLOW_BUILTIN": "*",
+      "NODE_FUNCTION_ALLOW_EXTERNAL": "adm-zip",
+      "VIVID_CHAPTER_SUBWORKFLOW_ID": "pipeline_chapter 워크플로우 ID",
+      "TELEGRAM_CHAT_ID": "에러 알림 수신 Telegram 채팅 ID",
+      "PEXELS_API_KEY": "Pexels API 키 (V5.0 b_roll_video 비디오 검색용)",
+      "PIXABAY_API_KEY": "Pixabay API 키 (V5.0 real_photo 이미지 검색용)"
+    },
+    "node_code_files": {
+      "Load Files": "n8n_workflow/nodes/node1_load_files.js",
+      "Node 12 — Final Merge": "n8n_workflow/nodes/node12_final_merge.js",
+      "Node 13 — Vrew Builder": "n8n_workflow/nodes/node13_vrew_builder.js"
+    }
   }
 }

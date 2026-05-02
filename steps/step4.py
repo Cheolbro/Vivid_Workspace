@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 import webbrowser
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
@@ -31,9 +32,12 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QStackedWidget, QFileDialog,
     QProgressBar, QApplication,
     QDialog, QTextEdit, QFrame, QScrollArea, QTabWidget,
-    QSizePolicy,
+    QSizePolicy, QTableWidget, QTableWidgetItem, QComboBox,
+    QAbstractItemView,
 )
+from PySide6.QtGui import QColor
 from utils.hf_editor import HfEditorPanel, _lint_hf_json, _find_free_port
+from utils.motion_comic_editor import MotionComicEditor
 
 from utils.theme import C_HIGHLIGHT, C_SUCCESS, C_ERROR, C_BG_INPUT, C_BORDER, C_TEXT, SHARED_FX_DIR
 from utils.widgets import (
@@ -211,6 +215,190 @@ class PreflightDialog(QDialog):
 
 
 # ══════════════════════════════════════════════
+# UsageStatsDialog — 에셋 라이브러리 사용횟수 확인
+# ══════════════════════════════════════════════
+
+_REFS_CATALOG_PATH = Path(__file__).parent.parent / "shared_assets" / "references_catalog.json"
+
+_USAGE_CATEGORIES = ["characters", "props", "static_assets", "auto_generated_assets"]
+
+_CATEGORY_KR = {
+    "characters": "캐릭터",
+    "props": "소품",
+    "static_assets": "정적 에셋",
+    "auto_generated_assets": "자동 생성",
+}
+
+_SORT_OPTIONS = [
+    ("사용횟수 내림차순 (인기)", "usage_desc"),
+    ("사용횟수 오름차순 (미사용 후보)", "usage_asc"),
+    ("카테고리별", "category"),
+]
+
+
+class UsageStatsDialog(QDialog):
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("에셋 라이브러리 사용횟수 확인")
+        self.setMinimumSize(780, 520)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setStyleSheet(
+            f"QDialog {{ background:{C_BG_INPUT}; color:{C_TEXT}; }}"
+            f"QLabel  {{ color:{C_TEXT}; }}"
+        )
+        self._items: list[dict] = []
+        self._stale_days = 180
+        self._load_catalog()
+        self._build_ui()
+        self._apply_sort(0)
+
+    # ── 카탈로그 파싱 ──────────────────────────────────────────────────
+
+    def _load_catalog(self):
+        if not _REFS_CATALOG_PATH.exists():
+            return
+        data = json.loads(_REFS_CATALOG_PATH.read_text(encoding="utf-8"))
+        self._stale_days = data.get("validation_rules", {}).get(
+            "stale_threshold_days", 180
+        )
+        now = datetime.now(timezone.utc)
+        for cat in _USAGE_CATEGORIES:
+            section = data.get(cat, {})
+            for key, entry in section.items():
+                if key.startswith("_"):
+                    continue
+                display = entry.get("display_name", key)
+                usage = entry.get("usage_count", 0)
+                created = entry.get("created_at", "")
+                age_days = -1
+                if created:
+                    try:
+                        dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                        age_days = (now - dt).days
+                    except ValueError:
+                        pass
+                stale = usage == 0 and age_days >= self._stale_days
+                self._items.append({
+                    "category": cat,
+                    "key": key,
+                    "display": display,
+                    "usage": usage,
+                    "created": created[:10] if created else "-",
+                    "age_days": age_days,
+                    "stale": stale,
+                })
+
+    # ── UI ──────────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(10)
+
+        total = len(self._items)
+        usage_vals = [it["usage"] for it in self._items]
+        avg_usage = sum(usage_vals) / total if total else 0
+        unused = sum(1 for v in usage_vals if v == 0)
+        stale = sum(1 for it in self._items if it["stale"])
+
+        stats_text = (
+            f"총 {total}개 항목  |  평균 사용횟수 {avg_usage:.1f}  |  "
+            f"미사용 {unused}개  |  6개월+ 미사용(적색) {stale}개"
+        )
+        stats_lbl = QLabel(stats_text)
+        stats_lbl.setStyleSheet(
+            f"background:{C_HIGHLIGHT}; color:#000; font-size:12px;"
+            "font-weight:bold; padding:8px 12px; border-radius:4px;"
+        )
+        stats_lbl.setWordWrap(True)
+        root.addWidget(stats_lbl)
+
+        sort_row = QHBoxLayout()
+        sort_row.addWidget(QLabel("정렬:"))
+        self._sort_combo = QComboBox()
+        self._sort_combo.setStyleSheet(
+            f"background:{C_BG_INPUT}; color:{C_TEXT}; border:1px solid {C_BORDER};"
+            "padding:4px 8px;"
+        )
+        for label, _ in _SORT_OPTIONS:
+            self._sort_combo.addItem(label)
+        self._sort_combo.currentIndexChanged.connect(self._apply_sort)
+        sort_row.addWidget(self._sort_combo)
+        sort_row.addStretch()
+        root.addLayout(sort_row)
+
+        self._table = QTableWidget()
+        self._table.setColumnCount(5)
+        self._table.setHorizontalHeaderLabels(
+            ["카테고리", "키/ID", "이름", "사용횟수", "등록일"]
+        )
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setAlternatingRowColors(True)
+        self._table.setStyleSheet(
+            f"QTableWidget {{ background:{C_BG_INPUT}; color:{C_TEXT};"
+            f"  gridline-color:{C_BORDER}; font-size:11px; }}"
+            f"QTableWidget::item {{ padding:4px 6px; }}"
+            f"QHeaderView::section {{ background:#333; color:{C_TEXT};"
+            f"  font-weight:bold; padding:4px 6px; border:1px solid {C_BORDER}; }}"
+            f"QTableWidget::item:alternate {{ background:#252525; }}"
+        )
+        header = self._table.horizontalHeader()
+        header.setStretchLastSection(True)
+        header.setDefaultSectionSize(120)
+        header.resizeSection(0, 100)
+        header.resizeSection(1, 180)
+        header.resizeSection(2, 160)
+        header.resizeSection(3, 80)
+        root.addWidget(self._table)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("닫기")
+        close_btn.setFixedWidth(80)
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        root.addLayout(btn_row)
+
+    # ── 정렬 & 테이블 갱신 ─────────────────────────────────────────────
+
+    def _apply_sort(self, idx: int):
+        _, mode = _SORT_OPTIONS[idx]
+        items = list(self._items)
+        if mode == "usage_desc":
+            items.sort(key=lambda x: x["usage"], reverse=True)
+        elif mode == "usage_asc":
+            items.sort(key=lambda x: x["usage"])
+        else:
+            items.sort(key=lambda x: (x["category"], x["key"]))
+        self._populate(items)
+
+    def _populate(self, items: list[dict]):
+        self._table.setRowCount(len(items))
+        stale_bg = QColor("#4D0000")
+        stale_fg = QColor(C_ERROR)
+        for r, it in enumerate(items):
+            cells = [
+                _CATEGORY_KR.get(it["category"], it["category"]),
+                it["key"],
+                it["display"],
+                str(it["usage"]),
+                it["created"],
+            ]
+            for c, text in enumerate(cells):
+                tw = QTableWidgetItem(text)
+                if c == 3:
+                    tw.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                if it["stale"]:
+                    tw.setBackground(stale_bg)
+                    tw.setForeground(stale_fg)
+                self._table.setItem(r, c, tw)
+
+
+# ══════════════════════════════════════════════
 # Step4Widget
 # ══════════════════════════════════════════════
 
@@ -354,6 +542,14 @@ class Step4Widget(QWidget):
         )
         self._fx_gallery_btn.clicked.connect(self._on_fx_gallery_click)
         row_a.addWidget(self._fx_gallery_btn)
+
+        self._usage_stats_btn = QPushButton("📊  에셋 사용횟수")
+        self._usage_stats_btn.setToolTip(
+            "references_catalog.json의 모든 에셋 항목별 사용횟수를 확인합니다.\n"
+            "6개월 이상 미사용 항목은 적색 강조됩니다."
+        )
+        self._usage_stats_btn.clicked.connect(self._on_usage_stats_click)
+        row_a.addWidget(self._usage_stats_btn)
 
         self._open_input_btn = QPushButton("📂  프로젝트 폴더 열기")
         self._open_input_btn.setToolTip("프로젝트 input/ 폴더를 파일 탐색기로 엽니다.")
@@ -579,9 +775,21 @@ class Step4Widget(QWidget):
         root.addWidget(make_divider())
 
         # ─────────────────────────────────────────────────
+        # STEP HF-C2: 모션 코믹 챕터 편집 (과제 6)
+        # ─────────────────────────────────────────────────
+        lbl_mc = QLabel("[ STEP D ]  모션 코믹 챕터 편집 (Motion Comic Editor)")
+        lbl_mc.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;")
+        root.addWidget(lbl_mc)
+
+        self._mc_editor = MotionComicEditor()
+        root.addWidget(self._mc_editor)
+
+        root.addWidget(make_divider())
+
+        # ─────────────────────────────────────────────────
         # STEP HF-C: 렌더링
         # ─────────────────────────────────────────────────
-        lbl_b = QLabel("[ STEP D ]  HyperFrames 슬라이드 렌더링")
+        lbl_b = QLabel("[ STEP E ]  HyperFrames 슬라이드 렌더링")
         lbl_b.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;")
         root.addWidget(lbl_b)
 
@@ -617,7 +825,7 @@ class Step4Widget(QWidget):
         # ─────────────────────────────────────────────────
         # STEP HF-C: Vrew 조립
         # ─────────────────────────────────────────────────
-        lbl_c = QLabel("[ STEP E ]  최종 Vrew 파일 생성")
+        lbl_c = QLabel("[ STEP F ]  최종 Vrew 파일 생성")
         lbl_c.setStyleSheet(f"color:{C_HIGHLIGHT}; font-size:12px; font-weight:bold;")
         root.addWidget(lbl_c)
 
@@ -731,6 +939,20 @@ class Step4Widget(QWidget):
                             self._hf_editor.load_compositions(comps_dir, sorted(data.keys()))
                 except Exception:
                     pass
+
+            # ── Motion Comic Editor: 챕터 HTML 복원 ─────────────────────
+            mc_comps = path / "compositions"
+            mc_edits = path / "edits"
+            if mc_comps.exists():
+                chapter_keys = sorted(
+                    f.stem for f in mc_comps.glob("chapter_*.html")
+                )
+                if chapter_keys:
+                    mc_edits.mkdir(parents=True, exist_ok=True)
+                    self._mc_editor.load_chapters(mc_comps, mc_edits, chapter_keys)
+                    self._log.info(
+                        f"모션 코믹 편집기 복원됨  ·  챕터 {len(chapter_keys)}개"
+                    )
 
     # ── §A: 기획안 업로드 ────────────────────────────────────────────────
 
@@ -864,6 +1086,13 @@ class Step4Widget(QWidget):
     def _on_fx_gallery_click(self):
         """FX 갤러리 팝업 열기 (캐시 있으면 즉시, 없으면 파싱 후 표시)"""
         dlg = FxGalleryDialog(CATALOG_PATH, parent=self)
+        dlg.exec()
+
+    # ── §A: 에셋 라이브러리 사용횟수 확인 (과제 22) ──────────────────────────
+
+    def _on_usage_stats_click(self):
+        """references_catalog.json의 에셋별 usage_count를 테이블로 표시"""
+        dlg = UsageStatsDialog(parent=self)
         dlg.exec()
 
     # ── §B: VIVID Studio 인터랙티브 에디터 ──────────────────────────────────

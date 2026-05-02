@@ -1,0 +1,514 @@
+{
+  "$schema_version": "2.0.0",
+  "last_updated": "2026-04-30",
+  "description": "v4.5 references catalog. 4 categories (characters / props / static_assets / auto_generated_assets). Node 4 performs 5-tier search; Node 7 loads file_path into LoadImage; Node 9.5 auto-archives generate_asset:true outputs into auto_generated_assets.",
+  "references_root": "assets/references/",
+  "static_assets_root": "assets/static/",
+  "auto_generated_root": "assets/static/auto_generated/",
+  "global_style_anchor": {
+    "version": "1.0.0",
+    "anchor_text": "informative webtoon style, noir economic illustration, bold clean vector lines",
+    "updated_at": "2026-04-30",
+    "_comment": "Suffix-injected into Node 4 description_render output (code-enforced). Operator updates every ~6 months and bumps version. Mismatched style_anchor_version items are demoted (not auto-excluded) in Node 4 search ranking."
+  },
+  "lookup_rules": {
+    "id_format": {
+      "character": "char_<character_key>_<angle>",
+      "prop": "prop_<prop_key>",
+      "static": "static_<key>",
+      "auto_generated": "auto_<sha1_12char>"
+    },
+    "character_angle_keys": ["front", "side", "back"],
+    "missing_id_behavior": "If Node 4 emits ref_image_id == 'none' (new/extra character or prop), Node 7 must Bypass FaceID/IP-Adapter and switch to pure text-to-image mode.",
+    "search_priority_5_tier": [
+      "1. characters (match_score >= 0.7, FaceID enforced)",
+      "2. static_assets (exact ID match, no embedding search)",
+      "3. auto_generated_assets (cosine >= 0.85 via hnswlib)",
+      "4. props (match_score >= 0.7, img2img)",
+      "5. generate_asset:true (new ComfyUI call, archived by Node 9.5)"
+    ]
+  },
+  "characters": {
+    "_template": {
+      "_comment": "Copy this block when registering a new fixed character. Delete the leading underscore in the key.",
+      "display_name": "표시용 이름",
+      "appearance_anchor": "A 30-something Korean man, wearing a neat dark suit, glasses, short black hair, sharp jawline",
+      "default_lora": "noir_webtoon_style",
+      "faceid_weight": 0.85,
+      "style_weight": 0.65,
+      "tags": ["male", "korean", "anchor", "suit"],
+      "description_search": "korean male anchor in suit",
+      "description_render": "korean male anchor in dark suit, glasses, professional",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "<ISO timestamp>",
+      "variants": {
+        "front": {
+          "ref_image_id": "char_<key>_front",
+          "file_path": "assets/references/char_<key>_front.png",
+          "is_face_anchor": true,
+          "usage_hint": "정면 대화 / 카메라 응시 씬"
+        },
+        "side": {
+          "ref_image_id": "char_<key>_side",
+          "file_path": "assets/references/char_<key>_side.png",
+          "is_face_anchor": false,
+          "usage_hint": "걷거나 이동하는 씬 / 측면 발화"
+        },
+        "back": {
+          "ref_image_id": "char_<key>_back",
+          "file_path": "assets/references/char_<key>_back.png",
+          "is_face_anchor": false,
+          "usage_hint": "뒷모습 강조 / 대상을 바라보는 컷"
+        }
+      }
+    },
+    "anchor_kim": {
+      "display_name": "앵커 김 기자",
+      "appearance_anchor": "A 40-something Korean male anchor, wearing a navy suit with a burgundy tie, silver-rimmed glasses, neatly combed black hair with slight gray at the temples, calm and authoritative expression",
+      "default_lora": "noir_webtoon_style",
+      "faceid_weight": 0.85,
+      "style_weight": 0.65,
+      "tags": ["male", "korean", "anchor", "navy_suit", "glasses", "authoritative"],
+      "description_search": "korean male anchor 40s navy suit glasses authoritative",
+      "description_render": "A 40-something Korean male anchor, wearing a navy suit with a burgundy tie, silver-rimmed glasses, neatly combed black hair with slight gray at the temples, calm and authoritative expression",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z",
+      "variants": {
+        "front": {
+          "ref_image_id": "char_anchor_kim_front",
+          "file_path": "assets/references/char_anchor_kim_front.png",
+          "is_face_anchor": true,
+          "usage_hint": "스튜디오 정면 발화 / 클로즈업"
+        },
+        "side": {
+          "ref_image_id": "char_anchor_kim_side",
+          "file_path": "assets/references/char_anchor_kim_side.png",
+          "is_face_anchor": false,
+          "usage_hint": "현장 이동 / 인터뷰 측면"
+        },
+        "back": {
+          "ref_image_id": "char_anchor_kim_back",
+          "file_path": "assets/references/char_anchor_kim_back.png",
+          "is_face_anchor": false,
+          "usage_hint": "차트 모니터를 바라보는 뒷모습"
+        }
+      }
+    }
+  },
+  "props": {
+    "_template": {
+      "_comment": "Copy this block when registering a new fixed prop. Delete the leading underscore in the key.",
+      "display_name": "표시용 이름",
+      "description": "physical/visual description for img2img anchor",
+      "ref_image_id": "prop_<key>",
+      "file_path": "assets/references/prop_<key>.png",
+      "denoise_strength": 0.5,
+      "default_lora": "noir_webtoon_style",
+      "style_weight": 0.65,
+      "tags": ["object", "color", "context"],
+      "description_search": "concise noun phrase for embedding match",
+      "description_render": "full prompt with style anchor for ComfyUI",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "<ISO timestamp>",
+      "usage_hint": "어떤 맥락에서 자주 등장하는지"
+    },
+    "shoes_brown_leather": {
+      "display_name": "갈색 가죽 구두",
+      "description": "Pair of polished brown leather oxford shoes with subtle wear marks, journalistic webtoon line art",
+      "ref_image_id": "prop_shoes_brown_leather",
+      "file_path": "assets/references/prop_shoes_brown_leather.png",
+      "denoise_strength": 0.5,
+      "default_lora": "noir_webtoon_style",
+      "style_weight": 0.65,
+      "tags": ["shoes", "brown", "leather", "oxford", "footwear"],
+      "description_search": "brown leather oxford shoes",
+      "description_render": "Pair of polished brown leather oxford shoes with subtle wear marks, journalistic webtoon line art",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z",
+      "usage_hint": "주인공 등장 컷 발치 / 이동 씬 클로즈업"
+    },
+    "newspaper_economic": {
+      "display_name": "경제지 신문",
+      "description": "Folded broadsheet economic newspaper with a bold black headline and stock chart, vintage tone",
+      "ref_image_id": "prop_newspaper_economic",
+      "file_path": "assets/references/prop_newspaper_economic.png",
+      "denoise_strength": 0.5,
+      "default_lora": "noir_webtoon_style",
+      "style_weight": 0.65,
+      "tags": ["newspaper", "headline", "economic", "broadsheet", "print"],
+      "description_search": "economic newspaper headline",
+      "description_render": "Folded broadsheet economic newspaper with a bold black headline and stock chart, vintage tone",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z",
+      "usage_hint": "경제 이슈 도입부 / 헤드라인 강조"
+    }
+  },
+  "static_assets": {
+    "_template": {
+      "_comment": "Operator-curated reusable assets (flags, arrows, icons, generic memes). Exact ID match only — no embedding search. Node 4 references by asset_id directly. ComfyUI call: 0 (immediate use).",
+      "asset_id": "static_<key>",
+      "display_name": "표시용 이름",
+      "file_path": "assets/static/<key>.webp",
+      "tags": ["category", "subcategory"],
+      "description_search": "concise noun phrase",
+      "description_render": "full prompt (used only when re-rendering needed)",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "<ISO timestamp>"
+    },
+    "static_flag_kr": {
+      "asset_id": "static_flag_kr",
+      "display_name": "국기 - 대한민국",
+      "file_path": "assets/static/flag_kr.webp",
+      "tags": ["flag", "country", "korea", "kr"],
+      "description_search": "south korea flag taegukgi",
+      "description_render": "South Korean flag (Taegukgi) on transparent background, flat vector style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_flag_us": {
+      "asset_id": "static_flag_us",
+      "display_name": "국기 - 미국",
+      "file_path": "assets/static/flag_us.webp",
+      "tags": ["flag", "country", "usa", "us"],
+      "description_search": "united states flag stars and stripes",
+      "description_render": "US flag (Stars and Stripes) on transparent background, flat vector style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_flag_cn": {
+      "asset_id": "static_flag_cn",
+      "display_name": "국기 - 중국",
+      "file_path": "assets/static/flag_cn.webp",
+      "tags": ["flag", "country", "china", "cn"],
+      "description_search": "china flag five-star red",
+      "description_render": "China flag (Five-star Red) on transparent background, flat vector style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_flag_jp": {
+      "asset_id": "static_flag_jp",
+      "display_name": "국기 - 일본",
+      "file_path": "assets/static/flag_jp.webp",
+      "tags": ["flag", "country", "japan", "jp"],
+      "description_search": "japan flag hinomaru",
+      "description_render": "Japan flag (Hinomaru) on transparent background, flat vector style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_flag_ru": {
+      "asset_id": "static_flag_ru",
+      "display_name": "국기 - 러시아",
+      "file_path": "assets/static/flag_ru.webp",
+      "tags": ["flag", "country", "russia", "ru"],
+      "description_search": "russia flag tricolor",
+      "description_render": "Russia flag (white-blue-red tricolor) on transparent background, flat vector style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_flag_uk": {
+      "asset_id": "static_flag_uk",
+      "display_name": "국기 - 영국",
+      "file_path": "assets/static/flag_uk.webp",
+      "tags": ["flag", "country", "uk", "britain"],
+      "description_search": "united kingdom flag union jack",
+      "description_render": "UK flag (Union Jack) on transparent background, flat vector style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_flag_de": {
+      "asset_id": "static_flag_de",
+      "display_name": "국기 - 독일",
+      "file_path": "assets/static/flag_de.webp",
+      "tags": ["flag", "country", "germany", "de"],
+      "description_search": "germany flag tricolor",
+      "description_render": "Germany flag (black-red-gold tricolor) on transparent background, flat vector style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_flag_eu": {
+      "asset_id": "static_flag_eu",
+      "display_name": "국기 - 유럽연합",
+      "file_path": "assets/static/flag_eu.webp",
+      "tags": ["flag", "country", "european_union", "eu"],
+      "description_search": "european union flag stars",
+      "description_render": "European Union flag (12 gold stars on blue) on transparent background, flat vector style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_arrow_up": {
+      "asset_id": "static_arrow_up",
+      "display_name": "화살표 상승",
+      "file_path": "assets/static/arrow_up.webp",
+      "tags": ["arrow", "up", "rise", "increase"],
+      "description_search": "upward arrow rise",
+      "description_render": "Bold red upward arrow indicating rise/increase, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_arrow_down": {
+      "asset_id": "static_arrow_down",
+      "display_name": "화살표 하락",
+      "file_path": "assets/static/arrow_down.webp",
+      "tags": ["arrow", "down", "fall", "decrease"],
+      "description_search": "downward arrow fall",
+      "description_render": "Bold blue downward arrow indicating fall/decrease, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_arrow_right": {
+      "asset_id": "static_arrow_right",
+      "display_name": "화살표 우측",
+      "file_path": "assets/static/arrow_right.webp",
+      "tags": ["arrow", "right", "next", "flow"],
+      "description_search": "rightward arrow flow direction",
+      "description_render": "Black rightward arrow indicating flow/next, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_arrow_left": {
+      "asset_id": "static_arrow_left",
+      "display_name": "화살표 좌측",
+      "file_path": "assets/static/arrow_left.webp",
+      "tags": ["arrow", "left", "back", "reverse"],
+      "description_search": "leftward arrow reverse",
+      "description_render": "Black leftward arrow indicating reverse/back, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_x_mark": {
+      "asset_id": "static_x_mark",
+      "display_name": "X 표시",
+      "file_path": "assets/static/x_mark.webp",
+      "tags": ["x", "wrong", "denial", "negative"],
+      "description_search": "red x mark wrong denial",
+      "description_render": "Bold red X mark indicating wrong/denied, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_check_mark": {
+      "asset_id": "static_check_mark",
+      "display_name": "체크 표시",
+      "file_path": "assets/static/check_mark.webp",
+      "tags": ["check", "correct", "approval", "positive"],
+      "description_search": "green check mark correct approval",
+      "description_render": "Bold green check mark indicating correct/approved, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_exclamation": {
+      "asset_id": "static_exclamation",
+      "display_name": "느낌표",
+      "file_path": "assets/static/exclamation.webp",
+      "tags": ["exclamation", "alert", "warning", "important"],
+      "description_search": "exclamation mark alert important",
+      "description_render": "Bold yellow exclamation mark indicating alert/important, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_question": {
+      "asset_id": "static_question",
+      "display_name": "물음표",
+      "file_path": "assets/static/question.webp",
+      "tags": ["question", "doubt", "inquiry"],
+      "description_search": "question mark doubt inquiry",
+      "description_render": "Bold blue question mark indicating doubt/inquiry, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_warning_triangle": {
+      "asset_id": "static_warning_triangle",
+      "display_name": "경고 삼각형",
+      "file_path": "assets/static/warning_triangle.webp",
+      "tags": ["warning", "danger", "caution"],
+      "description_search": "warning triangle caution danger",
+      "description_render": "Yellow warning triangle with exclamation, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_bomb": {
+      "asset_id": "static_bomb",
+      "display_name": "폭탄",
+      "file_path": "assets/static/bomb.webp",
+      "tags": ["bomb", "explosive", "shock", "scandal"],
+      "description_search": "cartoon bomb explosive shock",
+      "description_render": "Classic round black cartoon bomb with lit fuse, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_money_bundle": {
+      "asset_id": "static_money_bundle",
+      "display_name": "돈다발",
+      "file_path": "assets/static/money_bundle.webp",
+      "tags": ["money", "cash", "wealth", "dollar"],
+      "description_search": "stack of dollar bills cash bundle",
+      "description_render": "Stack of green dollar bills tied with paper band, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_briefcase": {
+      "asset_id": "static_briefcase",
+      "display_name": "서류 가방",
+      "file_path": "assets/static/briefcase.webp",
+      "tags": ["briefcase", "business", "documents"],
+      "description_search": "brown leather briefcase business",
+      "description_render": "Brown leather business briefcase, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_magnifier": {
+      "asset_id": "static_magnifier",
+      "display_name": "돋보기",
+      "file_path": "assets/static/magnifier.webp",
+      "tags": ["magnifier", "search", "investigation", "detail"],
+      "description_search": "magnifying glass search investigation",
+      "description_render": "Black-framed magnifying glass indicating investigation, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_target": {
+      "asset_id": "static_target",
+      "display_name": "표적",
+      "file_path": "assets/static/target.webp",
+      "tags": ["target", "goal", "focus", "bullseye"],
+      "description_search": "red bullseye target goal",
+      "description_render": "Red and white concentric bullseye target with arrow at center, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_chart_up": {
+      "asset_id": "static_chart_up",
+      "display_name": "상승 그래프 아이콘",
+      "file_path": "assets/static/chart_up.webp",
+      "tags": ["chart", "up", "rise", "icon"],
+      "description_search": "rising stock chart icon green",
+      "description_render": "Simple rising bar/line chart icon in green, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_chart_down": {
+      "asset_id": "static_chart_down",
+      "display_name": "하락 그래프 아이콘",
+      "file_path": "assets/static/chart_down.webp",
+      "tags": ["chart", "down", "fall", "icon"],
+      "description_search": "falling stock chart icon red",
+      "description_render": "Simple falling bar/line chart icon in red, transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    },
+    "static_percent_sign": {
+      "asset_id": "static_percent_sign",
+      "display_name": "퍼센트 기호",
+      "file_path": "assets/static/percent_sign.webp",
+      "tags": ["percent", "%", "rate", "ratio"],
+      "description_search": "percent sign symbol bold",
+      "description_render": "Bold black percent sign (%), transparent background, manga style",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "2026-04-30T00:00:00Z"
+    }
+  },
+  "auto_generated_assets": {
+    "_template": {
+      "_comment": "Auto-archived by Node 9.5 from generate_asset:true outputs. Searched via hnswlib cosine similarity (>= 0.85). Node 4 emits reuse_asset_id on match -> joins L1 cache path -> ComfyUI skipped.",
+      "asset_id": "auto_<sha1_12>",
+      "display_name": "Node 4 한국어 이름",
+      "file_path": "assets/static/auto_generated/auto_<sha1_12>.webp",
+      "tags": ["english", "tag", "array"],
+      "description_search": "style-token-stripped noun phrase",
+      "description_render": "full prompt with global_style_anchor suffix",
+      "style_anchor_version": "1.0.0",
+      "lora_signature": "noir_webtoon_style@0.65",
+      "usage_count": 0,
+      "created_at": "<ISO timestamp>",
+      "source_video_id": "<video_id at creation>",
+      "seed": "<integer seed used at generation>"
+    }
+  },
+  "validation_rules": {
+    "all_ref_image_id_must_be_present_in_catalog": true,
+    "missing_file_path_behavior": "Node 7 'File Exists' check fails -> Bypass FaceID/IP-Adapter, fallback to pure text-to-image",
+    "denoise_strength_range": [0.3, 0.7],
+    "faceid_weight_range": [0.6, 0.95],
+    "style_weight_range": [0.5, 0.85],
+    "embedding_match_threshold": 0.85,
+    "match_score_threshold": 0.7,
+    "stale_threshold_days": 180,
+    "stale_action": "manual_cleanup_only",
+    "global_style_anchor_required": true,
+    "auto_archive_required_fields": [
+      "asset_id",
+      "display_name",
+      "file_path",
+      "description_search",
+      "description_render",
+      "tags",
+      "created_at",
+      "usage_count",
+      "source_video_id",
+      "seed",
+      "lora_signature",
+      "style_anchor_version"
+    ]
+  }
+}

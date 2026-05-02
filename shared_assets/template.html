@@ -1,0 +1,2035 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>VIVID Studio — Motion Comic Renderer</title>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+    <link
+      href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.min.css"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+
+    <!-- v4.5 Data Viz Engine (과제 13, §4.4) — Chrome 영구 캐시로 챕터 간 공유 -->
+    <link
+      rel="preload"
+      as="script"
+      href="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"
+    />
+    <link
+      rel="preload"
+      as="script"
+      href="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+
+    <!-- SVG Filters: Boil/Wiggle Effect (§2.5) -->
+    <svg style="position: absolute; width: 0; height: 0">
+      <defs>
+        <filter id="boil-a">
+          <feTurbulence type="turbulence" baseFrequency="0.02" numOctaves="3" seed="1" />
+          <feDisplacementMap in="SourceGraphic" scale="3" />
+        </filter>
+        <filter id="boil-b">
+          <feTurbulence type="turbulence" baseFrequency="0.02" numOctaves="3" seed="2" />
+          <feDisplacementMap in="SourceGraphic" scale="3" />
+        </filter>
+        <filter id="boil-c">
+          <feTurbulence type="turbulence" baseFrequency="0.02" numOctaves="3" seed="3" />
+          <feDisplacementMap in="SourceGraphic" scale="3" />
+        </filter>
+      </defs>
+    </svg>
+
+    <style>
+      /* === Z-INDEX 변수 일원화 (v4.5 §4.5.6) === */
+      :root {
+        --z-bg: 1;
+        --z-props: 50;
+        --z-character: 100;
+        --z-foreground: 200;
+        --z-watermark: 500;
+        --z-subtitle: 600;
+        --z-vfx-vignette: 700;
+        --z-fp-luminance: 551;
+        --z-vfx-flicker: 710;
+        --z-typography: 800;
+        --z-data-viz: 850; /* v4.5 신설 */
+        --z-ambient: 900;
+        --z-scene-effects: 950; /* v4.5 신설 (과제 15) */
+        --z-transition: 1000;
+      }
+
+      /* === RESET & BASE === */
+      *,
+      *::before,
+      *::after {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #0a0a0f;
+        font-family: "Pretendard", sans-serif;
+      }
+
+      /* === VIEWPORT === */
+      #viewport {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #0a0a0f;
+      }
+
+      /* === SCENE CONTAINER (Camera Target) === */
+      .scene-container {
+        position: absolute;
+        inset: 0;
+        transform-origin: center center;
+        will-change: transform;
+      }
+
+      /* === SPLIT-REGION CONTAINER (v4.5 §4.5.1, 과제 14) === */
+      /* layout 없으면 default region 1개로 폴백, 활성 시 layout.regions[]에 따라 분리 */
+      .split-region-container {
+        position: absolute;
+        inset: 0;
+      }
+
+      .split-region {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        will-change: transform, opacity;
+      }
+
+      /* === SCENE EFFECTS LAYER (과제 15가 채움 — region 위) === */
+      .scene-effects-layer {
+        position: absolute;
+        inset: 0;
+        z-index: var(--z-scene-effects);
+        pointer-events: none;
+      }
+
+      /* === ASSET LAYERS inside .split-region === */
+      .layer {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      .layer img {
+        position: absolute;
+        display: block;
+      }
+
+      .bg-layer {
+        z-index: var(--z-bg);
+      }
+
+      .bg-layer img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+
+      /* V5.0 B-Roll 비디오 배경 (과제 32) */
+      .bg-layer video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+
+      /* V5.0 Anti-Duplication: 실사 에셋에 랜덤 CSS 필터 + Ken Burns 효과 (과제 32) */
+      .bg-layer .anti-dup {
+        will-change: transform, filter;
+      }
+
+      .props-layer {
+        z-index: var(--z-props);
+      }
+
+      .character-layer {
+        z-index: var(--z-character);
+      }
+
+      .character-layer img {
+        bottom: 0;
+        height: 90%;
+        left: 50%;
+        transform: translateX(-50%);
+        transform-origin: bottom center;
+      }
+
+      .foreground-layer {
+        z-index: var(--z-foreground);
+      }
+
+      /* === FRAME FINGERPRINT LUMINANCE LAYER (과제 25-D) === */
+      .fp-luminance {
+        position: absolute;
+        inset: 0;
+        z-index: var(--z-fp-luminance);
+        pointer-events: none;
+        background: linear-gradient(to bottom, rgba(0, 0, 0, 0.5), rgba(255, 255, 255, 0.2));
+        opacity: 0;
+      }
+
+      /* === CHARACTER POSITION PRESETS === */
+      .char-pos-left {
+        left: 15% !important;
+        transform: translateX(-50%) !important;
+      }
+
+      .char-pos-center {
+        left: 50% !important;
+        transform: translateX(-50%) !important;
+      }
+
+      .char-pos-right {
+        left: 85% !important;
+        transform: translateX(-50%) !important;
+      }
+
+      /* === OVERLAY LAYERS (above .scene-container) === */
+      .watermark {
+        position: absolute;
+        z-index: var(--z-watermark);
+        opacity: 0.32;
+        pointer-events: none;
+      }
+
+      .watermark img {
+        width: 120px;
+        height: auto;
+      }
+
+      /* Subtitle safe area gradient (§2.5) */
+      .subtitle-gradient {
+        position: absolute;
+        z-index: var(--z-subtitle);
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 220px;
+        background: linear-gradient(
+          to top,
+          rgba(0, 0, 0, 0.9) 0%,
+          rgba(0, 0, 0, 0.4) 50%,
+          transparent 100%
+        );
+        pointer-events: none;
+      }
+
+      /* VFX Overlay — Vignette (§2.5) */
+      .vfx-vignette {
+        position: absolute;
+        z-index: var(--z-vfx-vignette);
+        inset: 0;
+        pointer-events: none;
+        background: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.85) 100%);
+      }
+
+      /* VFX Overlay — Red Flicker */
+      .vfx-flicker {
+        position: absolute;
+        z-index: var(--z-vfx-flicker);
+        inset: 0;
+        pointer-events: none;
+        background: rgba(180, 20, 20, 0.15);
+        opacity: 0;
+      }
+
+      /* Data Viz Layer (v4.5 §4.4) — ECharts/Chart.js 컨테이너, GSAP 외부 progress 제어 */
+      .data-viz-layer {
+        position: absolute;
+        z-index: var(--z-data-viz);
+        inset: 0;
+        pointer-events: none;
+      }
+
+      .data-viz-container {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 1200px;
+        height: 700px;
+        opacity: 0;
+        background: rgba(10, 10, 15, 0.55);
+        border-radius: 8px;
+        backdrop-filter: blur(2px);
+      }
+
+      .data-viz-container.active {
+        opacity: 1;
+      }
+
+      /* Typography Layer (§2.4) */
+      .typography-layer {
+        position: absolute;
+        z-index: var(--z-typography);
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+      }
+
+      .kinetic-text {
+        font-family: "Pretendard", sans-serif;
+        font-weight: 900;
+        font-size: 96px;
+        color: #fff;
+        text-shadow:
+          4px 4px 15px rgba(0, 0, 0, 0.9),
+          0 0 40px rgba(0, 0, 0, 0.5);
+        opacity: 0;
+        transform: scale(0.8);
+        white-space: nowrap;
+      }
+
+      /* Ambient Effect Layer (§2.6) */
+      .ambient-layer {
+        position: absolute;
+        z-index: var(--z-ambient);
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+
+      .particle {
+        position: absolute;
+        pointer-events: none;
+      }
+
+      /* Transition Overlay */
+      .transition-overlay {
+        position: absolute;
+        z-index: var(--z-transition);
+        inset: 0;
+        pointer-events: none;
+        opacity: 0;
+        background: #000;
+      }
+
+      /* === SCENE VISIBILITY === */
+      .scene-group {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        visibility: hidden;
+      }
+
+      .scene-group.active {
+        opacity: 1;
+        visibility: visible;
+      }
+
+      /* === BOIL EFFECT TOGGLE === */
+      .boil-active {
+        filter: url(#boil-a);
+      }
+
+      /* === MANGA EFFECTS (v4.5 §4.5.3, 과제 15) — scene-effects-layer 자식 === */
+      .manga-fx {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0;
+        will-change: opacity, transform;
+      }
+
+      .fx-speed_lines_radial {
+        background: repeating-conic-gradient(
+          from 0deg at 50% 50%,
+          rgba(0, 0, 0, 0.85) 0deg,
+          rgba(0, 0, 0, 0.85) 0.6deg,
+          transparent 0.6deg,
+          transparent 4deg
+        );
+        mask-image: radial-gradient(circle at 50% 50%, transparent 18%, #000 36%, #000 100%);
+        -webkit-mask-image: radial-gradient(
+          circle at 50% 50%,
+          transparent 18%,
+          #000 36%,
+          #000 100%
+        );
+      }
+
+      .fx-speed_lines_horizontal {
+        background: repeating-linear-gradient(
+          to right,
+          rgba(0, 0, 0, 0.85) 0px,
+          rgba(0, 0, 0, 0.85) 2px,
+          transparent 2px,
+          transparent 18px
+        );
+        mask-image: linear-gradient(to right, #000 0%, transparent 30%, transparent 70%, #000 100%);
+        -webkit-mask-image: linear-gradient(
+          to right,
+          #000 0%,
+          transparent 30%,
+          transparent 70%,
+          #000 100%
+        );
+      }
+
+      .fx-impact_flash {
+        background: #fff;
+      }
+
+      .fx-vignette_pulse {
+        background: radial-gradient(ellipse at center, transparent 30%, rgba(0, 0, 0, 0.95) 100%);
+      }
+
+      .fx-ink_splash {
+        background: #0a0a0f;
+        mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'><circle cx='50' cy='50' r='32'/><circle cx='25' cy='30' r='12'/><circle cx='75' cy='32' r='10'/><circle cx='80' cy='66' r='14'/><circle cx='20' cy='72' r='13'/><circle cx='55' cy='15' r='6'/><circle cx='15' cy='50' r='5'/></svg>");
+        -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'><circle cx='50' cy='50' r='32'/><circle cx='25' cy='30' r='12'/><circle cx='75' cy='32' r='10'/><circle cx='80' cy='66' r='14'/><circle cx='20' cy='72' r='13'/><circle cx='55' cy='15' r='6'/><circle cx='15' cy='50' r='5'/></svg>");
+        mask-size: 100% 100%;
+        -webkit-mask-size: 100% 100%;
+        mask-repeat: no-repeat;
+        -webkit-mask-repeat: no-repeat;
+        transform-origin: center center;
+      }
+
+      .fx-region_burst {
+        background: radial-gradient(
+          circle at 50% 50%,
+          transparent 22%,
+          rgba(255, 240, 180, 0.6) 48%,
+          transparent 72%
+        );
+      }
+
+      .fx-sweat_drop {
+        inset: auto;
+        top: 18%;
+        right: 35%;
+        width: 30px;
+        height: 40px;
+        background: radial-gradient(
+          ellipse at 40% 30%,
+          rgba(190, 225, 255, 1),
+          rgba(80, 150, 220, 0.85)
+        );
+        border-radius: 50% 50% 50% 50% / 30% 30% 70% 70%;
+      }
+
+      .fx-anger_vein {
+        inset: auto;
+        top: 12%;
+        right: 38%;
+        width: 64px;
+        height: 64px;
+        background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 60 60'><g fill='none' stroke='%23dc2626' stroke-width='4' stroke-linecap='round'><path d='M15 26 L30 6 L45 26'/><path d='M15 36 L30 16 L45 36'/><path d='M30 6 L30 26 M22 16 L38 16'/></g></svg>")
+          center/contain no-repeat;
+      }
+
+      /* === EDIT-MODE HOOKS (과제 21) === */
+      body.edit-mode [data-edit-id] {
+        outline: 2px dashed rgba(0, 255, 180, 0.45);
+        outline-offset: -2px;
+        pointer-events: auto !important;
+        cursor: move;
+      }
+
+      body.edit-mode [data-edit-id].edit-selected {
+        outline: 3px solid #00ffaa;
+        outline-offset: -3px;
+      }
+
+      #editSeekBar {
+        position: fixed;
+        bottom: 12px;
+        left: 12px;
+        right: 12px;
+        z-index: 100000;
+        display: none;
+        gap: 12px;
+        align-items: center;
+        background: rgba(20, 22, 30, 0.92);
+        border: 1px solid #444;
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-family: "Pretendard", sans-serif;
+        color: #ddd;
+        font-size: 13px;
+      }
+
+      body.edit-mode #editSeekBar {
+        display: flex;
+      }
+
+      #editSeekBar input[type="range"] {
+        flex: 1;
+        accent-color: #00ffaa;
+      }
+
+      #editSeekBar .ed-time {
+        font-variant-numeric: tabular-nums;
+        min-width: 120px;
+        text-align: center;
+      }
+
+      #editSeekBar button {
+        background: #ff3a3a;
+        color: #fff;
+        border: 0;
+        border-radius: 4px;
+        padding: 6px 12px;
+        cursor: pointer;
+        font-family: inherit;
+      }
+
+      #editSeekBar .ed-export {
+        background: #2c7be5;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="viewport">
+      <!-- Scenes are dynamically generated here by JS -->
+      <div class="scene-container" id="sceneContainer"></div>
+
+      <!-- Fixed Overlays (not affected by camera) -->
+      <div class="subtitle-gradient"></div>
+      <div class="vfx-vignette" id="vfxVignette"></div>
+      <div class="vfx-flicker" id="vfxFlicker"></div>
+      <!-- v4.5 Data Viz Layer (과제 13) — 씬마다 1개 컨테이너 동적 생성 -->
+      <div class="data-viz-layer" id="dataVizLayer"></div>
+      <div class="typography-layer" id="typographyLayer"></div>
+      <div class="ambient-layer" id="ambientLayer"></div>
+      <div class="transition-overlay" id="transitionOverlay"></div>
+      <div class="watermark" id="watermark"><img src="" alt="watermark" /></div>
+    </div>
+
+    <script>
+      // ============================================================
+      // VIVID Studio — Motion Comic Template Engine v4.0
+      // Node 10 injects data at {{INJECTED_JSON}}
+      // ============================================================
+
+      const DATA = {{ INJECTED_JSON }};
+
+      // ============================================================
+      // [0] CONFIGURATION
+      // ============================================================
+      const FPS = DATA.meta.fps || 30;
+      const TOTAL_DURATION = DATA.meta.duration;
+      const TOTAL_FRAMES = Math.ceil(TOTAL_DURATION * FPS);
+
+      // Parallax speed multipliers (§2.1)
+      const PARALLAX = { bg: 0.3, props: 0.7, character: 1.0, foreground: 1.5 };
+
+      // Boil effect filter cycle (§2.5) — 10fps = 100ms
+      const BOIL_FILTERS = ['url(#boil-a)', 'url(#boil-b)', 'url(#boil-c)'];
+      let boilIndex = -1;
+
+      // === LAYOUT CLIP-PATH MAP (v4.5 §4.5.2, 과제 14) ===
+      // 6종 분할의 clip-path를 layout.regions[] 순서대로 적용. 미지원 type은 default 1개로 폴백.
+      const LAYOUT_CLIP_MAP = {
+        split_diagonal: [
+          'polygon(0 0, 100% 0, 0 100%)',
+          'polygon(100% 0, 100% 100%, 0 100%)'
+        ],
+        split_vertical: [
+          'polygon(0 0, 50% 0, 50% 100%, 0 100%)',
+          'polygon(50% 0, 100% 0, 100% 100%, 50% 100%)'
+        ],
+        split_horizontal: [
+          'polygon(0 0, 100% 0, 100% 50%, 0 50%)',
+          'polygon(0 50%, 100% 50%, 100% 100%, 0 100%)'
+        ],
+        split_3regions: [
+          'polygon(0 0, 33.333% 0, 33.333% 100%, 0 100%)',
+          'polygon(33.333% 0, 66.666% 0, 66.666% 100%, 33.333% 100%)',
+          'polygon(66.666% 0, 100% 0, 100% 100%, 66.666% 100%)'
+        ],
+        split_corner: [
+          'polygon(0 0, 100% 0, 100% 100%, 0 100%)',
+          'polygon(0 60%, 40% 60%, 40% 100%, 0 100%)'
+        ],
+        split_focus_zoom: [
+          'polygon(0 0, 100% 0, 100% 100%, 0 100%)',
+          'polygon(60% 10%, 95% 10%, 95% 50%, 60% 50%)'
+        ]
+      };
+      const LAYOUT_REGION_COUNT = {
+        split_diagonal: 2, split_vertical: 2, split_horizontal: 2,
+        split_3regions: 3, split_corner: 2, split_focus_zoom: 2
+      };
+
+      // 환각 방어: layout 출력 검증.
+      function validateLayout(lay) {
+        const errors = [];
+        if (!lay || typeof lay !== 'object') return { ok: false, errors: ['layout 객체 아님'] };
+        if (!LAYOUT_CLIP_MAP[lay.type]) errors.push(`layout.type 미지원: ${lay.type}`);
+        if (!Array.isArray(lay.regions)) errors.push('layout.regions 배열 아님');
+        else if (LAYOUT_REGION_COUNT[lay.type] && lay.regions.length !== LAYOUT_REGION_COUNT[lay.type]) {
+          errors.push(`layout.regions 개수 불일치: ${lay.regions.length} vs 예상 ${LAYOUT_REGION_COUNT[lay.type]}`);
+        }
+        if (typeof lay.trigger_time !== 'number') errors.push('layout.trigger_time 누락');
+        if (typeof lay.duration !== 'number' || lay.duration <= 0) errors.push('layout.duration 누락/비양수');
+        return { ok: errors.length === 0, errors };
+      }
+
+      // 씬 자산을 regions 객체로 정규화 (MO-5).
+      // - 신규 스키마: scene.assets.regions[region_id] 그대로 사용
+      // - 레거시 스키마(v4.0): 평면 assets를 default region 1개로 래핑
+      function normalizeSceneRegions(scene) {
+        const a = scene.assets || {};
+        if (a.regions && typeof a.regions === 'object' && Object.keys(a.regions).length > 0) {
+          return a.regions;
+        }
+        return {
+          default: {
+            bg: a.bg || null,
+            characters: a.characters || null,
+            props: a.props || null,
+            foreground: a.foreground || null
+          }
+        };
+      }
+
+      // 활성 layout을 적용할 region 정의 결정.
+      // - 검증 성공 layout이면 layout.regions[]를 그대로 반환
+      // - 미정의/검증 실패면 null (default 1개 폴백)
+      function resolveLayoutRegions(scene) {
+        if (!scene.layout) return null;
+        const v = validateLayout(scene.layout);
+        if (!v.ok) {
+          console.warn(`[Layout][${scene.scene_id}] 검증 실패, default 폴백:`, v.errors);
+          return null;
+        }
+        return scene.layout.regions;
+      }
+
+      // === RENDER MODE DETECTION (과제 1-1) ===
+      // 일반 브라우저 미리보기: rAF 자동 루프 + setInterval 기반 boil
+      // HyperFrames 렌더 모드: rAF/setInterval 모두 OFF, 외부 window.VIVID_SEEK(t)로만 진행
+      const RENDER_MODE = (() => {
+        try {
+          const params = new URLSearchParams(window.location.search);
+          if (params.get('render') === '1') return true;
+        } catch (e) { /* file:// 환경 등에서 무시 */ }
+        if (window.VIVID_RENDER_MODE === true) return true;
+        return false;
+      })();
+
+      // === EDIT MODE DETECTION (과제 21) — RENDER_MODE보다 우선순위 낮음 ===
+      const EDIT_PARAM = (() => {
+        try {
+          return new URLSearchParams(window.location.search).get('edit') === '1';
+        } catch (e) { return false; }
+      })();
+
+      // ============================================================
+      // [1] DOM BUILDER — Preload all scenes (Method A)
+      // v4.5 §4.5.1 (과제 14): scene-group → split-region-container → split-region[region_id] → layers
+      // 모든 시각 객체에 data-edit-id 부여 (과제 21 Edit-Mode hit-test 대비).
+      // ============================================================
+      function buildSceneRegion(scene, regionId, regionData, clipPath, slideIn) {
+        const region = document.createElement('div');
+        region.className = 'split-region';
+        region.dataset.regionId = regionId;
+        region.dataset.editId = `${scene.scene_id}_${regionId}_region`;
+        if (clipPath) region.style.clipPath = clipPath;
+        if (slideIn) region.dataset.slideIn = slideIn;
+
+        // Background
+        const bgLayer = document.createElement('div');
+        bgLayer.className = 'layer bg-layer';
+        // ── V5.0: bg_style에 따른 배경 레이어 동적 DOM 생성 (과제 32) ──
+        const bgStyle = scene.bg_style || 'illustration';
+
+        if (bgStyle === 'b_roll_video' && scene.api_asset_path) {
+          // B-Roll 비디오: <video> 태그 생성
+          const video = document.createElement('video');
+          video.src = scene.api_asset_path;
+          video.autoplay = false; // VIVID_SEEK로 동기화
+          video.loop = true;
+          video.muted = true;
+          video.playsInline = true;
+          video.preload = 'auto';
+          video.className = 'anti-dup';
+          video.dataset.editId = `${scene.scene_id}_${regionId}_bg_video`;
+          video.dataset.bgType = 'b_roll_video';
+          // Anti-Duplication: 랜덤 CSS 필터
+          const seed = (scene.scene_id || '').length;
+          const hue = (seed * 37) % 15 - 7;
+          const bright = 95 + (seed * 13) % 11;
+          const contrast = 95 + (seed * 7) % 11;
+          video.style.filter = `hue-rotate(${hue}deg) brightness(${bright}%) contrast(${contrast}%)`;
+          bgLayer.appendChild(video);
+        } else if (bgStyle === 'real_photo' && scene.api_asset_path) {
+          // 실사 사진: <img> + Ken Burns + CSS 필터
+          const img = document.createElement('img');
+          img.src = scene.api_asset_path;
+          img.loading = 'eager';
+          img.className = 'anti-dup';
+          img.dataset.editId = `${scene.scene_id}_${regionId}_bg_photo`;
+          img.dataset.bgType = 'real_photo';
+          // Anti-Duplication: 랜덤 CSS 필터
+          const seed = (scene.scene_id || '').length;
+          const hue = (seed * 43) % 12 - 6;
+          const bright = 96 + (seed * 11) % 9;
+          const sat = 95 + (seed * 17) % 15;
+          img.style.filter = `hue-rotate(${hue}deg) brightness(${bright}%) saturate(${sat}%)`;
+          img.style.transform = 'scale(1.15)'; // Ken Burns 줌 여유
+          bgLayer.appendChild(img);
+        } else if (bgStyle === 'solid_color') {
+          // 단색 배경: CSS background-color만 적용
+          bgLayer.style.backgroundColor = scene.solid_color_css || '#1A1A2E';
+        } else if (regionData.bg) {
+          // 기본(illustration): 기존 ComfyUI 생성 이미지
+          const img = document.createElement('img');
+          const bgSrc = typeof regionData.bg === 'object' ? regionData.bg.path : regionData.bg;
+          img.src = bgSrc;
+          img.loading = 'eager';
+          img.dataset.editId = `${scene.scene_id}_${regionId}_bg`;
+          // 과제 25-C: 배경 텍스처 오프셋
+          const fp = DATA.branding && DATA.branding.frame_fp;
+          if (fp && fp.bg_offset_x != null) {
+            img.style.transform = 'scale(1.02)';
+            img.style.objectPosition = `${fp.bg_offset_x}% ${fp.bg_offset_y}%`;
+          }
+          bgLayer.appendChild(img);
+        }
+        region.appendChild(bgLayer);
+
+        // Props
+        const propsLayer = document.createElement('div');
+        propsLayer.className = 'layer props-layer';
+        if (regionData.props) {
+          regionData.props.forEach((prop, pi) => {
+            const img = document.createElement('img');
+            img.src = prop.path;
+            img.style.zIndex = prop.z_index || 50;
+            img.dataset.editId = `${scene.scene_id}_${regionId}_prop_${String(pi + 1).padStart(2, '0')}`;
+            propsLayer.appendChild(img);
+          });
+        }
+        region.appendChild(propsLayer);
+
+        // Characters (multi-character support §필수속성9)
+        const charLayer = document.createElement('div');
+        charLayer.className = 'layer character-layer';
+        if (regionData.characters) {
+          regionData.characters.forEach((char, ci) => {
+            const img = document.createElement('img');
+            img.src = char.path;
+            img.className = 'char-pos-' + (char.position || 'center');
+            img.style.zIndex = char.z_index || 100;
+            img.dataset.charId = char.scene_asset_id;
+            img.dataset.regionId = regionId;
+            // C-4: lipsync는 data-active="true" 캐릭터에만 적용. 명시 없으면 기본 활성.
+            img.dataset.active = (char.active === false) ? 'false' : 'true';
+            img.dataset.editId = `${scene.scene_id}_${regionId}_${char.scene_asset_id || 'character_' + String(ci + 1).padStart(2, '0')}`;
+            charLayer.appendChild(img);
+          });
+        }
+        region.appendChild(charLayer);
+
+        // Foreground
+        const fgLayer = document.createElement('div');
+        fgLayer.className = 'layer foreground-layer';
+        if (regionData.foreground && regionData.foreground.path) {
+          const img = document.createElement('img');
+          img.src = regionData.foreground.path;
+          img.style.width = '100%';
+          img.style.height = '100%';
+          img.style.objectFit = 'cover';
+          img.dataset.editId = `${scene.scene_id}_${regionId}_foreground`;
+          fgLayer.appendChild(img);
+        }
+        region.appendChild(fgLayer);
+
+        return region;
+      }
+
+      function buildScenes() {
+        const container = document.getElementById('sceneContainer');
+        DATA.scenes.forEach((scene, i) => {
+          const group = document.createElement('div');
+          group.className = 'scene-group' + (i === 0 ? ' active' : '');
+          group.id = 'scene-' + scene.scene_id;
+          group.dataset.sceneIndex = i;
+          group.dataset.editId = scene.scene_id;
+
+          const regionsData = normalizeSceneRegions(scene);
+          const layoutRegions = resolveLayoutRegions(scene);
+
+          const splitContainer = document.createElement('div');
+          splitContainer.className = 'split-region-container';
+
+          if (layoutRegions) {
+            // 활성 layout: layout.regions[] 순서로 clip-path 적용
+            const clips = LAYOUT_CLIP_MAP[scene.layout.type];
+            layoutRegions.forEach((reg, ri) => {
+              const data = regionsData[reg.region_id] || {};
+              const region = buildSceneRegion(scene, reg.region_id, data, clips[ri], reg.slide_in);
+              splitContainer.appendChild(region);
+            });
+          } else {
+            // 폴백: default region 1개 (clip-path 없음)
+            const data = regionsData['default'] || Object.values(regionsData)[0] || {};
+            const region = buildSceneRegion(scene, 'default', data, null, null);
+            splitContainer.appendChild(region);
+          }
+
+          group.appendChild(splitContainer);
+
+          // 씬 단위 만화 이펙트 컨테이너 (과제 15가 채움)
+          const effects = document.createElement('div');
+          effects.className = 'scene-effects-layer';
+          effects.id = 'scene-effects-' + scene.scene_id;
+          group.appendChild(effects);
+
+          container.appendChild(group);
+        });
+      }
+
+      // ============================================================
+      // [2] BRANDING ENGINE (§2.7)
+      // ============================================================
+      function applyBranding() {
+        const b = DATA.branding;
+        if (!b) return;
+        const wm = document.getElementById('watermark');
+        wm.style.right = (b.watermark_x || 30) + 'px';
+        wm.style.bottom = (b.watermark_y || 30) + 'px';
+        wm.style.opacity = b.watermark_opacity || 0.32;
+
+        const vig = document.getElementById('vfxVignette');
+        const alpha = b.vignette_alpha || 0.85;
+        vig.style.background = `radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,${alpha}) 100%)`;
+
+        document.documentElement.style.setProperty('--accent', `hsl(${b.accent_hue || 220},${b.accent_sat || 80}%,55%)`);
+      }
+
+      // ============================================================
+      // [2-B] FRAME FINGERPRINT ENGINE (과제 25)
+      // ============================================================
+      function applyFrameFingerprint() {
+        const fp = DATA.branding && DATA.branding.frame_fp;
+        if (!fp) return;
+
+        // 25-A: Micro-drift — 미세 위치 떨림으로 프레임 해시 분산
+        if (fp.micro_drift_intensity > 0) {
+          const range = fp.micro_drift_intensity * 1.0;
+          gsap.to('.split-region-container', {
+            x: `random(${-range},${range})`,
+            y: `random(${-range},${range})`,
+            rotation: `random(${-range * 0.1},${range * 0.1})`,
+            duration: `random(0.05,0.15)`,
+            repeat: -1,
+            repeatRefresh: true,
+            ease: 'none'
+          });
+        }
+
+        // 25-B: Chromatic Aberration — R/B 채널 오프셋으로 미세 색수차
+        if (fp.chroma_r_offset !== 0 || fp.chroma_b_offset !== 0) {
+          const ns = 'http://www.w3.org/2000/svg';
+          let svgEl = document.querySelector('svg defs');
+          if (!svgEl) {
+            const svgRoot = document.createElementNS(ns, 'svg');
+            svgRoot.style.cssText = 'position:absolute;width:0;height:0';
+            svgEl = document.createElementNS(ns, 'defs');
+            svgRoot.appendChild(svgEl);
+            document.body.insertBefore(svgRoot, document.body.firstChild);
+          }
+          const filter = document.createElementNS(ns, 'filter');
+          filter.id = 'frame-fp-chroma';
+          filter.setAttribute('color-interpolation-filters', 'sRGB');
+
+          const toR = document.createElementNS(ns, 'feColorMatrix');
+          toR.setAttribute('type', 'matrix');
+          toR.setAttribute('values', '1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0');
+          toR.setAttribute('result', 'r');
+          filter.appendChild(toR);
+
+          const offR = document.createElementNS(ns, 'feOffset');
+          offR.setAttribute('in', 'r');
+          offR.setAttribute('dx', String(fp.chroma_r_offset));
+          offR.setAttribute('dy', '0');
+          offR.setAttribute('result', 'rOff');
+          filter.appendChild(offR);
+
+          const toB = document.createElementNS(ns, 'feColorMatrix');
+          toB.setAttribute('type', 'matrix');
+          toB.setAttribute('values', '0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0');
+          toB.setAttribute('result', 'b');
+          filter.appendChild(toB);
+
+          const offB = document.createElementNS(ns, 'feOffset');
+          offB.setAttribute('in', 'b');
+          offB.setAttribute('dx', String(fp.chroma_b_offset));
+          offB.setAttribute('dy', '0');
+          offB.setAttribute('result', 'bOff');
+          filter.appendChild(offB);
+
+          const toG = document.createElementNS(ns, 'feColorMatrix');
+          toG.setAttribute('in', 'SourceGraphic');
+          toG.setAttribute('type', 'matrix');
+          toG.setAttribute('values', '0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0');
+          toG.setAttribute('result', 'g');
+          filter.appendChild(toG);
+
+          const blend1 = document.createElementNS(ns, 'feBlend');
+          blend1.setAttribute('in', 'rOff');
+          blend1.setAttribute('in2', 'g');
+          blend1.setAttribute('mode', 'screen');
+          blend1.setAttribute('result', 'rg');
+          filter.appendChild(blend1);
+
+          const blend2 = document.createElementNS(ns, 'feBlend');
+          blend2.setAttribute('in', 'rg');
+          blend2.setAttribute('in2', 'bOff');
+          blend2.setAttribute('mode', 'screen');
+          filter.appendChild(blend2);
+
+          svgEl.appendChild(filter);
+
+          const sc = document.getElementById('sceneContainer');
+          sc.style.filter = 'url(#frame-fp-chroma)';
+        }
+
+        // 25-D: Luminance Flicker — 미세 명도 변동 레이어
+        if (fp.luminance_opacity > 0) {
+          const lumEl = document.createElement('div');
+          lumEl.className = 'fp-luminance';
+          const vp = document.getElementById('viewport');
+          const subtitleGrad = vp.querySelector('.subtitle-gradient');
+          vp.insertBefore(lumEl, subtitleGrad);
+
+          gsap.to(lumEl, {
+            opacity: `random(0,${fp.luminance_opacity})`,
+            duration: `random(0.08,0.2)`,
+            repeat: -1,
+            repeatRefresh: true,
+            ease: 'none'
+          });
+        }
+      }
+
+      // ============================================================
+      // [3] CAMERA ENGINE (§2.3)
+      // ============================================================
+      function buildCameraTimeline(masterTL) {
+        const sc = document.getElementById('sceneContainer');
+        DATA.scenes.forEach(scene => {
+          const cam = scene.camera_choreography;
+          if (!cam) return;
+          const dur = scene.end_time - scene.start_time;
+
+          masterTL.to(sc, {
+            x: -(cam.x || 0),
+            y: -(cam.y || 0),
+            scale: cam.scale || 1,
+            duration: dur * 0.8,
+            ease: cam.ease || 'power2.inOut'
+          }, scene.start_time + dur * 0.1);
+        });
+      }
+
+      // ============================================================
+      // [4] PARALLAX ENGINE (§2.1) — region-aware (과제 14)
+      // 각 split-region의 layer마다 독립적으로 parallax 오프셋 적용.
+      // region.dataset.parallaxOx/Oy 가 있으면 layer 오프셋에 합산.
+      // ============================================================
+      function applyParallax(scene, camX, camY) {
+        const group = document.getElementById('scene-' + scene.scene_id);
+        if (!group) return;
+        group.querySelectorAll('.split-region').forEach(region => {
+          const rOx = Number(region.dataset.parallaxOx || 0);
+          const rOy = Number(region.dataset.parallaxOy || 0);
+          const layers = {
+            bg: region.querySelector(':scope > .bg-layer'),
+            props: region.querySelector(':scope > .props-layer'),
+            character: region.querySelector(':scope > .character-layer'),
+            foreground: region.querySelector(':scope > .foreground-layer')
+          };
+          Object.entries(layers).forEach(([key, el]) => {
+            if (!el) return;
+            const factor = PARALLAX[key] || 1;
+            el.style.transform = `translate(${camX * factor + rOx}px, ${camY * factor + rOy}px)`;
+          });
+        });
+      }
+
+      // ============================================================
+      // [5] LIPSYNC ENGINE (§2.2) — region-aware + active-only (C-4, 과제 14)
+      // - region 전반의 character-layer img를 순회
+      // - data-active="true"인 캐릭터에만 적용
+      // - cue.character_id가 있으면 해당 charId만 매칭(없으면 활성 전부)
+      // ============================================================
+      function buildLipsyncTimeline(masterTL) {
+        DATA.scenes.forEach(scene => {
+          if (!scene.lipsync) return;
+          const group = document.getElementById('scene-' + scene.scene_id);
+          if (!group) return;
+          const allChars = Array.from(group.querySelectorAll('.split-region .character-layer img'));
+          if (allChars.length === 0) return;
+
+          scene.lipsync.forEach(cue => {
+            const targets = cue.character_id
+              ? allChars.filter(img => img.dataset.charId === cue.character_id)
+              : allChars.filter(img => img.dataset.active === 'true');
+            if (targets.length === 0) return;
+
+            if (cue.mouth === 'X') {
+              targets.forEach(img => {
+                masterTL.to(img, { scaleY: 1, duration: 0.05 }, cue.start);
+              });
+            } else {
+              targets.forEach(img => {
+                masterTL.to(img, {
+                  scaleY: 1.02, duration: 0.08,
+                  yoyo: true, repeat: Math.floor((cue.end - cue.start) / 0.15),
+                  ease: 'sine.inOut'
+                }, cue.start);
+              });
+            }
+          });
+        });
+      }
+
+      // ============================================================
+      // [6] TYPOGRAPHY ENGINE (§2.4)
+      // ============================================================
+      function buildTypographyTimeline(masterTL) {
+        const layer = document.getElementById('typographyLayer');
+        DATA.scenes.forEach(scene => {
+          const kt = scene.kinetic_typography;
+          if (!kt || !kt.text) return;
+
+          const el = document.createElement('div');
+          el.className = 'kinetic-text';
+          el.textContent = kt.text;
+          el.id = 'typo-' + scene.scene_id;
+          layer.appendChild(el);
+
+          const easingMap = {
+            bounce: 'bounce.out', slide: 'power3.out',
+            elastic: 'elastic.out(1,0.4)', ease: 'power2.out'
+          };
+          const ease = easingMap[kt.easing] || 'power2.out';
+          const mid = scene.start_time + (scene.end_time - scene.start_time) * 0.3;
+
+          masterTL.fromTo(el,
+            { opacity: 0, scale: 0.6, y: 30 },
+            { opacity: 1, scale: 1, y: 0, duration: 0.5, ease: ease },
+            mid
+          );
+          masterTL.to(el,
+            { opacity: 0, scale: 1.1, duration: 0.3, ease: 'power2.in' },
+            mid + 1.5
+          );
+        });
+      }
+
+      // ============================================================
+      // [7] AMBIENT EFFECT ENGINE (§2.6)
+      // ============================================================
+      function spawnAmbientParticles(scene) {
+        const layer = document.getElementById('ambientLayer');
+        layer.innerHTML = '';
+        const fx = scene.ambient_effect;
+        if (!fx || fx.type === 'none') return;
+
+        const counts = { light: 20, medium: 40, heavy: 80 };
+        const count = counts[fx.intensity] || 30;
+        const angle = fx.wind_angle || 0;
+
+        for (let i = 0; i < count; i++) {
+          const p = document.createElement('div');
+          p.className = 'particle';
+          const depthLayer = i % 3; // 0=far, 1=mid, 2=near
+          const depthScale = [0.4, 0.7, 1.2][depthLayer];
+          const depthBlur = [0, 0.5, 1.5][depthLayer];
+          const depthSpeed = [1.5, 1.0, 0.6][depthLayer];
+
+          const randX = Math.random() * 120 - 10;
+          const randDelay = Math.random() * 3;
+          const randDur = (2 + Math.random() * 3) * depthSpeed;
+          const randOpacity = 0.3 + Math.random() * 0.5;
+          const size = (2 + Math.random() * 4) * depthScale;
+
+          p.style.left = randX + '%';
+          p.style.top = '-5%';
+          p.style.opacity = randOpacity;
+          p.style.filter = `blur(${depthBlur}px)`;
+
+          if (fx.type === 'rain') {
+            p.style.width = (1 * depthScale) + 'px';
+            p.style.height = (12 + Math.random() * 8) * depthScale + 'px';
+            p.style.background = 'rgba(180,200,220,0.6)';
+            p.style.borderRadius = '1px';
+            p.style.animation = `rainFall ${randDur}s ${randDelay}s linear infinite`;
+            p.style.setProperty('--wind', angle + 'deg');
+          } else if (fx.type === 'snow') {
+            p.style.width = p.style.height = size + 'px';
+            p.style.background = 'rgba(255,255,255,0.8)';
+            p.style.borderRadius = '50%';
+            p.style.animation = `snowFall ${randDur * 2}s ${randDelay}s linear infinite`;
+          } else if (fx.type === 'dust') {
+            p.style.width = p.style.height = size + 'px';
+            p.style.background = 'rgba(200,180,150,0.4)';
+            p.style.borderRadius = '50%';
+            p.style.top = Math.random() * 100 + '%';
+            p.style.animation = `dustFloat ${randDur * 3}s ${randDelay}s ease-in-out infinite alternate`;
+          } else if (fx.type === 'smoke') {
+            const s = (20 + Math.random() * 30) * depthScale;
+            p.style.width = p.style.height = s + 'px';
+            p.style.background = 'rgba(100,100,110,0.15)';
+            p.style.borderRadius = '50%';
+            p.style.top = '100%';
+            p.style.filter = `blur(${8 + depthBlur * 3}px)`;
+            p.style.animation = `smokeRise ${randDur * 4}s ${randDelay}s ease-out infinite`;
+          } else if (fx.type === 'light_rays') {
+            p.style.width = (3 + Math.random() * 5) + 'px';
+            p.style.height = '110%';
+            p.style.top = '-5%';
+            p.style.background = `linear-gradient(180deg, rgba(255,240,200,${0.05 + Math.random() * 0.08}), transparent 70%)`;
+            p.style.transformOrigin = 'top center';
+            p.style.transform = `rotate(${-15 + Math.random() * 30}deg)`;
+            p.style.animation = `rayPulse ${3 + Math.random() * 4}s ${randDelay}s ease-in-out infinite alternate`;
+          }
+          layer.appendChild(p);
+        }
+      }
+
+      // ============================================================
+      // [8] VFX ENGINE (§2.5)
+      // ============================================================
+      function buildVFXTimeline(masterTL) {
+        const vig = document.getElementById('vfxVignette');
+        const flicker = document.getElementById('vfxFlicker');
+        DATA.scenes.forEach(scene => {
+          if (scene.vfx_active) {
+            masterTL.to(vig, { opacity: 1, duration: 0.3 }, scene.start_time);
+            masterTL.fromTo(flicker,
+              { opacity: 0 },
+              { opacity: 0.3, duration: 0.1, yoyo: true, repeat: 5, ease: 'steps(1)' },
+              scene.start_time + 0.5
+            );
+          } else {
+            masterTL.to(vig, { opacity: 0.6, duration: 0.3 }, scene.start_time);
+          }
+        });
+      }
+
+      // ============================================================
+      // [9] TRANSITION ENGINE
+      // ============================================================
+      function buildTransitionTimeline(masterTL) {
+        const overlay = document.getElementById('transitionOverlay');
+        DATA.scenes.forEach((scene, i) => {
+          if (i === 0) return;
+          const type = scene.scene_transition || 'cut';
+          const t = scene.start_time;
+
+          if (type === 'fade_black') {
+            masterTL.to(overlay, { opacity: 1, duration: 0.4 }, t - 0.5);
+            masterTL.set(overlay, { opacity: 0 }, t + 0.3);
+          } else if (type === 'glitch') {
+            masterTL.fromTo(overlay,
+              { opacity: 0, skewX: 0 },
+              { opacity: 0.8, skewX: 15, duration: 0.1, yoyo: true, repeat: 3, ease: 'steps(1)' },
+              t - 0.2
+            );
+            masterTL.set(overlay, { opacity: 0, skewX: 0 }, t + 0.2);
+          } else if (type === 'zoom_blur') {
+            const sc = document.getElementById('sceneContainer');
+            masterTL.to(sc, { scale: 1.5, filter: 'blur(8px)', duration: 0.3 }, t - 0.3);
+            masterTL.set(sc, { scale: 1, filter: 'none' }, t);
+          } else if (type === 'slide_left') {
+            const sc = document.getElementById('sceneContainer');
+            masterTL.to(sc, { x: -1920, duration: 0.4, ease: 'power3.inOut' }, t - 0.4);
+            masterTL.set(sc, { x: 0 }, t);
+          }
+          // 'cut' = no transition effect
+        });
+      }
+
+      // ============================================================
+      // [10] SCENE SWITCHER
+      // ============================================================
+      function buildSceneSwitcher(masterTL) {
+        DATA.scenes.forEach((scene, i) => {
+          masterTL.call(
+            () => {
+              document.querySelectorAll('.scene-group').forEach((g) => g.classList.remove('active'));
+              const target = document.getElementById('scene-' + scene.scene_id);
+              if (target) target.classList.add('active');
+              spawnAmbientParticles(scene);
+              activateDataViz(scene); // v4.5 — data_layer 컨테이너 활성/비활성 토글
+            },
+            [],
+            scene.start_time
+          );
+        });
+      }
+
+      // ============================================================
+      // [15] DATA VIZ ENGINE (v4.5 §4.4, 과제 13)
+      // ECharts(지도) + Chart.js(차트). 라이브러리 자체 애니 OFF + GSAP 외부 progress 제어.
+      // 3단계 표준 시퀀스 (씬 0초 → 챕터 0초 변환은 Node 10이 수행):
+      //   페이드인 0.4s → 메인 0.5~2.0s → 강조 펄스 0.3s
+      // ============================================================
+
+      // ISO3 alpha-3 화이트리스트 (필요 시 GeoJSON 로딩과 함께 동적 보강).
+      const ISO3_WHITELIST = new Set([
+        'KOR','USA','CHN','JPN','PRK','RUS','GBR','FRA','DEU','IND',
+        'IRN','IRQ','SAU','ISR','TUR','EGY','SYR','LBN','JOR','YEM',
+        'ARE','QAT','KWT','OMN','HRM','PAK','AFG','UKR','POL','ITA',
+        'ESP','BRA','MEX','CAN','AUS','THA','VNM','IDN','SGP','TWN'
+      ]);
+
+      const VIZ_FADE_IN = 0.4;
+      const VIZ_PULSE = 0.3;
+
+      // 씬별 viz 인스턴스 캐시: { sceneId: { container, chart, type } }
+      const _vizInstances = {};
+
+      /**
+       * data_layer 출력 검증.
+       * - type 필수 ('map' | 'chart')
+       * - map: focus_region 또는 highlight 배열 필요. ISO3 화이트리스트 검증.
+       * - chart: chart_type 필수 ('line' | 'bar' | 'pie'), data 배열 길이 ≥ 1.
+       * 실패 시 { ok:false, errors:[] } 반환 — 호출부에서 컨테이너 비활성 + 경고 로그.
+       */
+      function validateDataLayer(dl) {
+        const errors = [];
+        if (!dl || typeof dl !== 'object') return { ok: false, errors: ['data_layer 객체 아님'] };
+        if (!['map', 'chart'].includes(dl.type)) errors.push(`type 오류: ${dl.type}`);
+        if (typeof dl.appear_time !== 'number') errors.push('appear_time 누락');
+        if (typeof dl.duration !== 'number' || dl.duration <= 0) errors.push('duration 누락/비양수');
+
+        if (dl.type === 'map') {
+          if (Array.isArray(dl.highlight)) {
+            for (const h of dl.highlight) {
+              if (!h.country || !ISO3_WHITELIST.has(h.country)) {
+                errors.push(`highlight country ISO3 미등록: ${h.country}`);
+              }
+            }
+          }
+          if (dl.route) {
+            if (dl.route.from && !ISO3_WHITELIST.has(dl.route.from)) {
+              errors.push(`route.from ISO3 미등록: ${dl.route.from}`);
+            }
+            if (dl.route.to && !ISO3_WHITELIST.has(dl.route.to)) {
+              errors.push(`route.to ISO3 미등록: ${dl.route.to}`);
+            }
+          }
+        } else if (dl.type === 'chart') {
+          if (!['line', 'bar', 'pie'].includes(dl.chart_type)) {
+            errors.push(`chart_type 오류: ${dl.chart_type}`);
+          }
+          if (!Array.isArray(dl.data) || dl.data.length === 0) {
+            errors.push('data 배열 비어있거나 누락');
+          } else {
+            for (const d of dl.data) {
+              if (typeof d.x === 'undefined' || typeof d.y !== 'number') {
+                errors.push(`data 항목 형식 오류: ${JSON.stringify(d)}`);
+                break;
+              }
+            }
+          }
+        }
+        return { ok: errors.length === 0, errors };
+      }
+
+      /** 씬별 viz 컨테이너 + 라이브러리 인스턴스 사전 생성 (chart 자체 애니 OFF). */
+      function buildDataVizInstances() {
+        const layer = document.getElementById('dataVizLayer');
+        DATA.scenes.forEach((scene) => {
+          const dl = scene.data_layer;
+          if (!dl) return;
+
+          const v = validateDataLayer(dl);
+          if (!v.ok) {
+            console.warn(`[DataViz][${scene.scene_id}] 검증 실패, 비활성:`, v.errors);
+            return;
+          }
+
+          const container = document.createElement('div');
+          container.className = 'data-viz-container';
+          container.id = 'viz-' + scene.scene_id;
+          container.dataset.sceneId = scene.scene_id;
+          container.dataset.editId = `${scene.scene_id}_dataviz`;
+          layer.appendChild(container);
+
+          let chart = null;
+          if (dl.type === 'chart' && typeof Chart !== 'undefined') {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1200;
+            canvas.height = 700;
+            container.appendChild(canvas);
+            chart = new Chart(canvas.getContext('2d'), {
+              type: dl.chart_type,
+              data: {
+                labels: dl.data.map((d) => d.x),
+                datasets: [
+                  {
+                    label: dl.title || '',
+                    data: dl.data.map(() => 0), // progressive 갱신을 위해 0으로 시작
+                    borderColor: '#ffaa55',
+                    backgroundColor: 'rgba(255,170,85,0.25)',
+                    borderWidth: 3,
+                    tension: 0.25,
+                  },
+                ],
+              },
+              options: {
+                animation: false, // ★ 라이브러리 자체 애니 OFF
+                responsive: false,
+                maintainAspectRatio: false,
+                plugins: {
+                  legend: { labels: { color: '#fff', font: { size: 18 } } },
+                  title: {
+                    display: !!dl.title,
+                    text: dl.title || '',
+                    color: '#fff',
+                    font: { size: 26, weight: 'bold' },
+                  },
+                },
+                scales: {
+                  x: { ticks: { color: '#ddd', font: { size: 16 } } },
+                  y: { ticks: { color: '#ddd', font: { size: 16 } } },
+                },
+              },
+            });
+          } else if (dl.type === 'map' && typeof echarts !== 'undefined') {
+            chart = echarts.init(container, null, { renderer: 'svg' });
+            // GeoJSON은 과제 20에서 정식 구축. 본 단계는 plain world map placeholder.
+            const baseOption = {
+              animation: false, // ★ 라이브러리 자체 애니 OFF
+              backgroundColor: 'transparent',
+              tooltip: { show: false },
+              series: [
+                {
+                  type: 'effectScatter',
+                  coordinateSystem: 'geo',
+                  symbolSize: 0, // progressive로 0 → 풀사이즈
+                  showEffectOn: 'render',
+                  rippleEffect: { brushType: 'stroke' },
+                  data: (dl.highlight || []).map((h) => ({
+                    name: h.country,
+                    value: [0, 0, 1], // GeoJSON 로드 후 실제 좌표로 대체. 임시 (0,0).
+                    itemStyle: { color: h.color || '#FF4500' },
+                  })),
+                },
+              ],
+            };
+            chart.setOption(baseOption);
+          } else {
+            console.warn(`[DataViz][${scene.scene_id}] 라이브러리 미가용 또는 type 미지원`);
+            return;
+          }
+
+          _vizInstances[scene.scene_id] = { container, chart, type: dl.type, dl, fullData: dl.data || [] };
+        });
+      }
+
+      /**
+       * 씬 진입 시 호출 (SCENE SWITCHER에서). 비활성 씬 컨테이너 모두 OFF, 진입 씬 ON.
+       * Chart.js의 progressive 데이터 갱신은 buildDataVizTimeline의 GSAP onUpdate에서 처리.
+       */
+      function activateDataViz(scene) {
+        document.querySelectorAll('.data-viz-container').forEach((c) => c.classList.remove('active'));
+        const inst = _vizInstances[scene.scene_id];
+        if (!inst) return;
+        inst.container.classList.add('active');
+        // 씬 진입 시 데이터를 0으로 리셋하여 GSAP onUpdate가 progressive 표현하도록.
+        if (inst.type === 'chart' && inst.chart) {
+          inst.chart.data.datasets[0].data = inst.fullData.map(() => 0);
+          inst.chart.update('none');
+        }
+      }
+
+      /**
+       * GSAP 마스터 타임라인에 3단계 시퀀스(페이드인/메인/펄스) 등록.
+       * 시간값(appear_time, duration)은 Node 10이 챕터 0초로 변환 완료.
+       */
+      function buildDataVizTimeline(masterTL) {
+        DATA.scenes.forEach((scene) => {
+          const dl = scene.data_layer;
+          const inst = _vizInstances[scene.scene_id];
+          if (!dl || !inst) return;
+
+          const t0 = dl.appear_time;
+          const dur = Math.max(0.5, dl.duration - VIZ_FADE_IN - VIZ_PULSE);
+          const easeMap = {
+            line: 'power2.out',
+            bar: 'power3.out',
+            pie: 'expo.out',
+          };
+          const ease = easeMap[dl.chart_type] || 'power2.out';
+
+          // 1) 페이드인 (opacity 0 → 1)
+          masterTL.fromTo(
+            inst.container,
+            { opacity: 0 },
+            { opacity: 1, duration: VIZ_FADE_IN, ease: 'power1.out' },
+            t0
+          );
+
+          // 2) 메인 — 외부 progress(0→1) 제어로 chart 갱신
+          const progressObj = { p: 0 };
+          masterTL.fromTo(
+            progressObj,
+            { p: 0 },
+            {
+              p: 1,
+              duration: dur,
+              ease,
+              onUpdate: () => {
+                const p = progressObj.p;
+                if (inst.type === 'chart' && inst.chart) {
+                  // progressive bar/line: 각 데이터를 final값 * p로 보간
+                  inst.chart.data.datasets[0].data = inst.fullData.map((d) => d.y * p);
+                  inst.chart.update('none');
+                } else if (inst.type === 'map' && inst.chart) {
+                  // map: symbolSize를 0 → 14로 보간
+                  inst.chart.setOption({
+                    series: [{ symbolSize: 14 * p }],
+                  });
+                }
+              },
+            },
+            t0 + VIZ_FADE_IN
+          );
+
+          // 3) 강조 펄스 (scale 1 → 1.05 → 1)
+          masterTL.to(
+            inst.container,
+            { scale: 1.05, duration: VIZ_PULSE / 2, ease: 'sine.out', yoyo: true, repeat: 1 },
+            t0 + VIZ_FADE_IN + dur
+          );
+
+          // 종료 시점에 페이드아웃 (씬 종료 직전)
+          const fadeOutAt = t0 + dl.duration;
+          masterTL.to(inst.container, { opacity: 0, duration: 0.3, ease: 'power1.in' }, fadeOutAt);
+        });
+      }
+
+      // ============================================================
+      // [16] COMIC PANEL LAYOUT ENGINE (v4.5 §4.5.2, 과제 14)
+      // 활성 layout이 있는 씬의 split-region에 slide-in 진입 애니메이션 적용.
+      // 시간값(trigger_time)은 Node 10이 챕터 0초로 변환 완료된 상태로 들어옴.
+      // ============================================================
+      const SLIDE_IN_FROM = {
+        from_left:   { x: -1920, y: 0 },
+        from_right:  { x:  1920, y: 0 },
+        from_top:    { x: 0, y: -1080 },
+        from_bottom: { x: 0, y:  1080 }
+      };
+
+      function buildLayoutTimeline(masterTL) {
+        DATA.scenes.forEach(scene => {
+          const lay = scene.layout;
+          if (!lay) return;
+          const v = validateLayout(lay);
+          if (!v.ok) return; // buildScenes 단계에서 이미 default 폴백, 여기선 스킵
+          const group = document.getElementById('scene-' + scene.scene_id);
+          if (!group) return;
+
+          const t0 = lay.trigger_time;
+          (lay.regions || []).forEach((reg, i) => {
+            const el = group.querySelector(`.split-region[data-region-id="${reg.region_id}"]`);
+            if (!el) return;
+            const from = SLIDE_IN_FROM[reg.slide_in];
+            if (!from) return; // slide_in 미지정이면 정적 표시
+
+            // 약간의 stagger로 region들이 순차 진입
+            const at = t0 + i * 0.08;
+            masterTL.fromTo(
+              el,
+              { x: from.x, y: from.y, opacity: 0 },
+              { x: 0, y: 0, opacity: 1, duration: 0.6, ease: 'power3.out' },
+              at
+            );
+          });
+        });
+      }
+
+      // ============================================================
+      // [17] MANGA EFFECTS ENGINE (v4.5 §4.5.3, 과제 15)
+      // 사전 정의 10종 + custom(렌더 스킵, Node 단계에서 FLUX/라이브러리 보강).
+      // 모든 시간값은 Node 10이 챕터 0초로 변환 완료된 상태로 들어옴.
+      // 동시 발동 5개 권장 — 초과 시 console.warn (성능 보호).
+      // ============================================================
+      const MANGA_FX_WHITELIST = new Set([
+        'speed_lines_radial', 'speed_lines_horizontal',
+        'impact_flash', 'screen_shake_low', 'screen_shake_high',
+        'vignette_pulse', 'ink_splash', 'region_burst',
+        'sweat_drop', 'anger_vein'
+      ]);
+
+      function validateMangaEffect(fx) {
+        const errors = [];
+        if (!fx || typeof fx !== 'object') return { ok: false, errors: ['effect 객체 아님'] };
+        if (fx.effect === 'custom') return { ok: false, errors: ['custom — 렌더 스킵'] };
+        if (!MANGA_FX_WHITELIST.has(fx.effect)) errors.push(`effect 미지원: ${fx.effect}`);
+        if (typeof fx.start_time !== 'number') errors.push('start_time 누락');
+        if (typeof fx.duration !== 'number' || fx.duration <= 0) errors.push('duration 누락/비양수');
+        return { ok: errors.length === 0, errors };
+      }
+
+      // 동시 발동 카운트: 모든 effect 시간 구간을 비교, 가장 많이 겹친 시점의 개수 반환.
+      function countConcurrentEffects(effects) {
+        let max = 0;
+        effects.forEach((a, i) => {
+          let count = 1;
+          effects.forEach((b, j) => {
+            if (i === j) return;
+            if (a.start_time < b.start_time + b.duration && b.start_time < a.start_time + a.duration) count++;
+          });
+          if (count > max) max = count;
+        });
+        return max;
+      }
+
+      function buildMangaFxElement(scene, fx, idx) {
+        const layer = document.getElementById('scene-effects-' + scene.scene_id);
+        if (!layer) return null;
+        const el = document.createElement('div');
+        el.className = 'manga-fx fx-' + fx.effect;
+        el.id = `mfx-${scene.scene_id}-${idx}`;
+        el.dataset.editId = `${scene.scene_id}_mfx_${String(idx + 1).padStart(2, '0')}`;
+        el.style.opacity = '0';
+        layer.appendChild(el);
+        return el;
+      }
+
+      function registerMangaEffect(tl, scene, fx, idx) {
+        const t0 = fx.start_time;
+        const dur = fx.duration;
+
+        switch (fx.effect) {
+          case 'speed_lines_radial':
+          case 'speed_lines_horizontal': {
+            const el = buildMangaFxElement(scene, fx, idx);
+            if (!el) return;
+            tl.fromTo(el, { opacity: 0 }, { opacity: 0.75, duration: 0.1 }, t0);
+            tl.to(el, { opacity: 0, duration: 0.2 }, t0 + Math.max(0.2, dur - 0.2));
+            break;
+          }
+          case 'impact_flash': {
+            const el = buildMangaFxElement(scene, fx, idx);
+            if (!el) return;
+            tl.fromTo(el, { opacity: 0 }, { opacity: 1, duration: 0.04, ease: 'steps(1)' }, t0);
+            tl.to(el, { opacity: 0, duration: Math.max(0.06, dur - 0.04), ease: 'power3.in' }, t0 + 0.04);
+            break;
+          }
+          case 'screen_shake_low':
+          case 'screen_shake_high': {
+            const amp = fx.effect.endsWith('_high') ? 20 : 8;
+            const sc = document.getElementById('sceneContainer');
+            if (!sc) return;
+            const cycles = Math.max(2, Math.floor(dur / 0.05));
+            for (let k = 0; k < cycles; k++) {
+              const ang = Math.random() * Math.PI * 2;
+              tl.to(sc, {
+                x: `+=${(Math.cos(ang) * amp).toFixed(2)}`,
+                y: `+=${(Math.sin(ang) * amp).toFixed(2)}`,
+                duration: 0.025, ease: 'none'
+              }, t0 + k * 0.05);
+            }
+            tl.to(sc, { x: 0, y: 0, duration: 0.1 }, t0 + dur);
+            break;
+          }
+          case 'vignette_pulse': {
+            const el = buildMangaFxElement(scene, fx, idx);
+            if (!el) return;
+            tl.fromTo(el, { opacity: 0 }, { opacity: 0.85, duration: dur * 0.3, ease: 'sine.in' }, t0);
+            tl.to(el, { opacity: 0, duration: dur * 0.7, ease: 'sine.out' }, t0 + dur * 0.3);
+            break;
+          }
+          case 'ink_splash': {
+            const el = buildMangaFxElement(scene, fx, idx);
+            if (!el) return;
+            tl.fromTo(el, { opacity: 0, scale: 0.3 },
+              { opacity: 0.9, scale: 1, duration: 0.2, ease: 'power3.out' }, t0);
+            tl.to(el, { opacity: 0, duration: 0.4 }, t0 + Math.max(0.4, dur - 0.4));
+            break;
+          }
+          case 'region_burst': {
+            const el = buildMangaFxElement(scene, fx, idx);
+            if (!el) return;
+            tl.fromTo(el, { opacity: 0, scale: 0.6 },
+              { opacity: 1, scale: 1.2, duration: 0.15, ease: 'power3.out' }, t0);
+            tl.to(el, { opacity: 0, scale: 1.5, duration: Math.max(0.15, dur - 0.15) }, t0 + 0.15);
+            break;
+          }
+          case 'sweat_drop': {
+            const el = buildMangaFxElement(scene, fx, idx);
+            if (!el) return;
+            tl.fromTo(el, { opacity: 0, y: -10 },
+              { opacity: 1, y: 0, duration: 0.2 }, t0);
+            tl.to(el, { y: 30, opacity: 0, duration: Math.max(0.2, dur - 0.2), ease: 'power2.in' }, t0 + 0.2);
+            break;
+          }
+          case 'anger_vein': {
+            const el = buildMangaFxElement(scene, fx, idx);
+            if (!el) return;
+            tl.fromTo(el, { opacity: 0, scale: 0 },
+              { opacity: 1, scale: 1, duration: 0.15, ease: 'back.out(2)' }, t0);
+            tl.to(el, { opacity: 0.5, duration: 0.1, yoyo: true, repeat: 3 }, t0 + 0.15);
+            tl.to(el, { opacity: 0, duration: 0.2 }, t0 + Math.max(0.45, dur - 0.2));
+            break;
+          }
+        }
+      }
+
+      function buildMangaEffectsTimeline(masterTL) {
+        DATA.scenes.forEach(scene => {
+          if (!Array.isArray(scene.manga_effects) || scene.manga_effects.length === 0) return;
+
+          const concurrent = countConcurrentEffects(scene.manga_effects);
+          if (concurrent > 5) {
+            console.warn(`[MangaFX][${scene.scene_id}] 동시 발동 ${concurrent}개 > 권장 5개 (성능 영향 가능)`);
+          }
+
+          scene.manga_effects.forEach((fx, idx) => {
+            const v = validateMangaEffect(fx);
+            if (!v.ok) {
+              if (fx && fx.effect !== 'custom') {
+                console.warn(`[MangaFX][${scene.scene_id}][${idx}]`, v.errors);
+              }
+              return;
+            }
+            registerMangaEffect(masterTL, scene, fx, idx);
+          });
+        });
+      }
+
+      // ============================================================
+      // [19] EDIT-MODE HOOKS (과제 21) — 과제 6 모션 코믹 편집기 선결 조건
+      // - window.VIVID_EDIT_MODE 토글
+      // - 진입 시 마스터 타임라인 일시정지 + 시크바 UI + drag/wheel 핸들러
+      // - 사용자 변경분을 _editDelta에 누적 (scene_id+edit_id 키)
+      // - window.VIVID_GET_EDIT_DELTA() 로 export → Node 10이 다음 빌드의 GSAP set() 초기값으로 주입
+      // ============================================================
+      window.VIVID_EDIT_MODE = false;
+      const _editDelta = {}; // { '<scene_id>:<edit_id>': { x, y, scale, rotation, opacity } }
+      let _editSelected = null;
+      let _editHandlers = null;
+      let _editSeekBar = null;
+
+      function _getEditKey(el) {
+        const sceneGroup = el.closest('.scene-group');
+        const sceneId = sceneGroup ? sceneGroup.id.replace('scene-', '') : 'global';
+        return `${sceneId}:${el.dataset.editId}`;
+      }
+
+      function _ensureDelta(key) {
+        if (!_editDelta[key]) {
+          _editDelta[key] = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 };
+        }
+        return _editDelta[key];
+      }
+
+      function _applyEditTransform(el, t) {
+        el.style.transform = `translate(${t.x}px, ${t.y}px) scale(${t.scale}) rotate(${t.rotation}deg)`;
+        el.style.opacity = String(t.opacity);
+      }
+
+      function _reapplyAllDeltas() {
+        Object.entries(_editDelta).forEach(([key, t]) => {
+          const [sceneId, editId] = key.split(':');
+          const root = document.getElementById('scene-' + sceneId) || document;
+          const el = root.querySelector(`[data-edit-id="${editId}"]`);
+          if (el) _applyEditTransform(el, t);
+        });
+      }
+
+      function _selectEditTarget(el) {
+        if (_editSelected) _editSelected.classList.remove('edit-selected');
+        _editSelected = el;
+        if (el) el.classList.add('edit-selected');
+      }
+
+      function _onEditMouseDown(e) {
+        const target = e.target.closest('[data-edit-id]');
+        if (!target) return;
+        // 시크바 자체는 무시
+        if (target.closest('#editSeekBar')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        _selectEditTarget(target);
+
+        const key = _getEditKey(target);
+        const start = { ..._ensureDelta(key) };
+        const sx = e.clientX, sy = e.clientY;
+
+        const onMove = (ev) => {
+          const t = _ensureDelta(key);
+          t.x = start.x + (ev.clientX - sx);
+          t.y = start.y + (ev.clientY - sy);
+          _applyEditTransform(target, t);
+        };
+        const onUp = () => {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      }
+
+      function _onEditWheel(e) {
+        if (!_editSelected) return;
+        const target = e.target.closest('[data-edit-id]');
+        if (!target || target !== _editSelected) return;
+        e.preventDefault();
+        const key = _getEditKey(target);
+        const t = _ensureDelta(key);
+        if (e.altKey) {
+          t.rotation += e.deltaY > 0 ? -2 : 2;
+        } else {
+          const factor = e.deltaY > 0 ? 0.95 : 1.05;
+          t.scale = Math.max(0.1, Math.min(8, t.scale * factor));
+        }
+        _applyEditTransform(target, t);
+      }
+
+      function _setupEditHandlers() {
+        _editHandlers = {
+          mousedown: _onEditMouseDown,
+          wheel: _onEditWheel
+        };
+        document.addEventListener('mousedown', _editHandlers.mousedown, true);
+        document.addEventListener('wheel', _editHandlers.wheel, { passive: false });
+      }
+
+      function _teardownEditHandlers() {
+        if (!_editHandlers) return;
+        document.removeEventListener('mousedown', _editHandlers.mousedown, true);
+        document.removeEventListener('wheel', _editHandlers.wheel);
+        _editHandlers = null;
+      }
+
+      function _buildEditSeekBar() {
+        if (_editSeekBar) return _editSeekBar;
+        const bar = document.createElement('div');
+        bar.id = 'editSeekBar';
+        bar.innerHTML = `
+          <input type="range" min="0" max="${TOTAL_DURATION}" step="0.05" value="0" />
+          <span class="ed-time">0.00 / ${TOTAL_DURATION.toFixed(2)}s</span>
+          <button class="ed-export">Export Δ</button>
+          <button class="ed-exit">Exit</button>
+        `;
+        document.body.appendChild(bar);
+        const range = bar.querySelector('input');
+        const time = bar.querySelector('.ed-time');
+        range.addEventListener('input', (e) => {
+          const t = Number(e.target.value);
+          applyTime(t);
+          _reapplyAllDeltas();
+          time.textContent = `${t.toFixed(2)} / ${TOTAL_DURATION.toFixed(2)}s`;
+        });
+        bar.querySelector('.ed-exit').addEventListener('click', exitEditMode);
+        bar.querySelector('.ed-export').addEventListener('click', () => {
+          const json = JSON.stringify(_editDelta, null, 2);
+          navigator.clipboard?.writeText(json);
+          console.log('[EditMode] delta JSON →', json);
+        });
+        _editSeekBar = bar;
+        return bar;
+      }
+
+      function enterEditMode() {
+        if (window.VIVID_EDIT_MODE) return;
+        if (RENDER_MODE) {
+          console.warn('[EditMode] RENDER_MODE 중에는 진입 불가');
+          return;
+        }
+        window.VIVID_EDIT_MODE = true;
+        if (masterTimeline) masterTimeline.pause();
+        document.body.classList.add('edit-mode');
+        _buildEditSeekBar();
+        _setupEditHandlers();
+        _reapplyAllDeltas();
+      }
+
+      function exitEditMode() {
+        if (!window.VIVID_EDIT_MODE) return;
+        window.VIVID_EDIT_MODE = false;
+        document.body.classList.remove('edit-mode');
+        _selectEditTarget(null);
+        _teardownEditHandlers();
+      }
+
+      // 외부 제어 API (과제 6 편집기/Node 10 연계)
+      window.VIVID_EDIT_ENTER = enterEditMode;
+      window.VIVID_EDIT_EXIT = exitEditMode;
+      window.VIVID_GET_EDIT_DELTA = () => JSON.parse(JSON.stringify(_editDelta));
+      window.VIVID_SET_EDIT_DELTA = (delta) => {
+        if (!delta || typeof delta !== 'object') return;
+        Object.entries(delta).forEach(([k, v]) => { _editDelta[k] = { ...v }; });
+        _reapplyAllDeltas();
+      };
+
+      // ============================================================
+      // [11] BOIL EFFECT CYCLE (§2.5) — 10fps SVG filter swap
+      // ============================================================
+      // 시간(초) 기반으로 boil 필터 인덱스를 결정하고 변경 시에만 DOM 업데이트.
+      // 일반 모드/렌더 모드 모두에서 동일 시점에 동일 결과가 나오도록 결정론적으로 동작.
+      function applyBoilFilterAtTime(time) {
+        const idx = Math.floor(time * 10) % BOIL_FILTERS.length;
+        if (idx === boilIndex) return;
+        boilIndex = idx;
+        document.querySelectorAll('.character-layer img, .props-layer img').forEach(img => {
+          img.style.filter = BOIL_FILTERS[idx];
+        });
+      }
+
+      // 일반 브라우저 미리보기 전용 setInterval 루프 (렌더 모드에서는 호출되지 않음).
+      let _boilIntervalId = null;
+      function startBoilCycle() {
+        let t = 0;
+        _boilIntervalId = setInterval(() => {
+          t += 0.1;
+          applyBoilFilterAtTime(t);
+        }, 100);
+      }
+
+      // ============================================================
+      // [V5.0] KEN BURNS EFFECT — 실사 사진 Anti-Duplication (과제 32)
+      // 씬마다 방향·속도가 결정론적 무작위로 달라지는 줌인/줌아웃/팬 이동.
+      // GSAP로 구현. scene_id 해시 기반 시드로 동일 씬은 항상 동일 결과.
+      // ============================================================
+      function initKenBurnsEffects() {
+        document.querySelectorAll('img[data-bg-type="real_photo"]').forEach(img => {
+          const sceneGroup = img.closest('.scene-group');
+          if (!sceneGroup) return;
+          const sceneId = sceneGroup.id.replace('scene-', '');
+          const scene = DATA.scenes.find(s => s.scene_id === sceneId);
+          if (!scene) return;
+
+          const dur = (scene.end_time - scene.start_time) || 8;
+          // 결정론적 시드: scene_id 문자열 해시
+          let hash = 0;
+          for (let i = 0; i < sceneId.length; i++) hash = ((hash << 5) - hash + sceneId.charCodeAt(i)) | 0;
+          const seedVal = Math.abs(hash);
+
+          // 방향 결정: 줌인 vs 줌아웃 vs 팬
+          const directions = ['zoomIn', 'zoomOut', 'panLeft', 'panRight', 'panUp'];
+          const dir = directions[seedVal % directions.length];
+          const endScale = dir === 'zoomIn' ? 1.25 : dir === 'zoomOut' ? 1.0 : 1.15;
+          const startScale = dir === 'zoomIn' ? 1.0 : dir === 'zoomOut' ? 1.25 : 1.15;
+          const panX = dir === 'panLeft' ? -40 : dir === 'panRight' ? 40 : 0;
+          const panY = dir === 'panUp' ? -30 : 0;
+
+          gsap.fromTo(img,
+            { scale: startScale, x: 0, y: 0 },
+            { scale: endScale, x: panX, y: panY, duration: dur, ease: 'none', delay: 0 }
+          );
+        });
+      }
+
+      // ============================================================
+      // [12] MASTER TIMELINE BUILDER
+      // ============================================================
+      function buildMasterTimeline() {
+        const tl = gsap.timeline({ paused: true });
+        buildSceneSwitcher(tl);
+        buildCameraTimeline(tl);
+        buildLayoutTimeline(tl);   // v4.5 §4.5.2 — 과제 14 (region slide-in)
+        buildLipsyncTimeline(tl);
+        buildTypographyTimeline(tl);
+        buildVFXTimeline(tl);
+        buildTransitionTimeline(tl);
+        buildDataVizTimeline(tl); // v4.5 §4.4 — 과제 13
+        buildMangaEffectsTimeline(tl); // v4.5 §4.5.3 — 과제 15
+        return tl;
+      }
+
+      // ============================================================
+      // [13] RENDER LOOP / SEEK API (과제 1-1)
+      // ============================================================
+      let currentFrame = 0;
+      let masterTimeline;
+
+      // time(초) 시점에 필요한 모든 시간 의존 작업을 한 번에 적용.
+      // - GSAP 마스터 타임라인 seek
+      // - parallax 좌표 계산 (현재 활성 씬 기준)
+      // - boil 필터 인덱스 갱신
+      function applyTime(time) {
+        masterTimeline.seek(time);
+
+        const sc = document.getElementById('sceneContainer');
+        const matrix = new DOMMatrix(getComputedStyle(sc).transform);
+        const currentScene = DATA.scenes.find(s => time >= s.start_time && time < s.end_time);
+        if (currentScene) {
+          applyParallax(currentScene, matrix.m41 * -1, matrix.m42 * -1);
+
+          // V5.0: B-Roll <video> 프레임 단위 동기화 (과제 32)
+          if (currentScene.bg_style === 'b_roll_video') {
+            const group = document.getElementById('scene-' + currentScene.scene_id);
+            if (group) {
+              const video = group.querySelector('video[data-bg-type="b_roll_video"]');
+              if (video && video.readyState >= 2) {
+                const sceneLocalTime = time - currentScene.start_time;
+                const videoDur = video.duration || 1;
+                video.currentTime = sceneLocalTime % videoDur;
+              }
+            }
+          }
+        }
+
+        if (!RENDER_MODE) applyBoilFilterAtTime(time);
+      }
+
+      // 일반 브라우저 미리보기용 자동 rAF 루프 (렌더 모드에서는 호출되지 않음).
+      function startBrowserPreviewLoop() {
+        function tick() {
+          const time = currentFrame / FPS;
+          applyTime(time);
+          currentFrame++;
+          if (currentFrame <= TOTAL_FRAMES) {
+            requestAnimationFrame(tick);
+          }
+        }
+        requestAnimationFrame(tick);
+      }
+
+      // HyperFrames CLI / 외부 제어용 동기 seek API.
+      // 렌더 모드에서는 이 함수만 사용해 프레임 단위로 진행.
+      window.VIVID_SEEK = function (time) {
+        applyTime(time);
+      };
+      window.VIVID_TOTAL_FRAMES = TOTAL_FRAMES;
+      window.VIVID_FPS = FPS;
+      window.VIVID_DURATION = TOTAL_DURATION;
+
+      // ============================================================
+      // [14] INITIALIZATION (과제 1-1: 렌더 모드 분기)
+      // ============================================================
+      function init() {
+        buildScenes();
+        applyBranding();
+        applyFrameFingerprint();
+        buildDataVizInstances(); // v4.5 §4.4 — chart/echarts 인스턴스 사전 생성 (animation: false)
+        initKenBurnsEffects(); // V5.0 — 실사 사진 Ken Burns 효과 (과제 32)
+        masterTimeline = buildMasterTimeline();
+
+        // 첫 씬의 ambient 파티클 즉시 생성 (씬 스위처는 t>0 이후 발동)
+        if (DATA.scenes && DATA.scenes.length > 0) {
+          spawnAmbientParticles(DATA.scenes[0]);
+          activateDataViz(DATA.scenes[0]); // v4.5 — 첫 씬 viz 컨테이너 즉시 활성
+        }
+
+        // 과제 21: Node 10이 머지한 기존 edit_delta가 있으면 즉시 주입 (다음 빌드 시 set() 초기값)
+        if (DATA.edit_delta && typeof DATA.edit_delta === 'object') {
+          window.VIVID_SET_EDIT_DELTA(DATA.edit_delta);
+        }
+
+        if (RENDER_MODE) {
+          // === HyperFrames 렌더 모드 ===
+          // rAF/setInterval 모두 비활성화. 외부 window.VIVID_SEEK(t)로만 진행.
+          // 0초 상태로 초기화한 뒤, HyperFrames CLI에 준비 완료 시그널을 노출.
+          applyTime(0);
+          window.VIVID_RENDER_READY = true;
+        } else if (EDIT_PARAM) {
+          // === 편집 모드 (과제 21) ===
+          // 0초 상태로 정지 + 시크바/핸들 활성화. 사용자가 시크바로 시점 이동.
+          applyTime(0);
+          enterEditMode();
+        } else {
+          // === 일반 브라우저 미리보기 모드 ===
+          startBoilCycle();
+          startBrowserPreviewLoop();
+        }
+      }
+
+      window.addEventListener('DOMContentLoaded', init);
+    </script>
+
+    <!-- Ambient Effect Keyframes -->
+    <style>
+      @keyframes rainFall {
+        0% {
+          transform: translateY(-5vh) translateX(0);
+          opacity: 0.7;
+        }
+
+        100% {
+          transform: translateY(115vh) translateX(calc(tan(var(--wind, 0deg)) * 50px));
+          opacity: 0.2;
+        }
+      }
+
+      @keyframes snowFall {
+        0% {
+          transform: translateY(-5vh) translateX(0);
+        }
+
+        25% {
+          transform: translateY(27vh) translateX(15px);
+        }
+
+        50% {
+          transform: translateY(55vh) translateX(-10px);
+        }
+
+        75% {
+          transform: translateY(82vh) translateX(12px);
+        }
+
+        100% {
+          transform: translateY(115vh) translateX(-5px);
+        }
+      }
+
+      @keyframes dustFloat {
+        0% {
+          transform: translate(0, 0) rotate(0deg);
+        }
+
+        100% {
+          transform: translate(30px, -20px) rotate(180deg);
+        }
+      }
+
+      @keyframes smokeRise {
+        0% {
+          transform: translateY(0) scale(0.5);
+          opacity: 0.2;
+        }
+
+        50% {
+          opacity: 0.15;
+        }
+
+        100% {
+          transform: translateY(-110vh) scale(2);
+          opacity: 0;
+        }
+      }
+
+      @keyframes rayPulse {
+        0% {
+          opacity: 0.3;
+        }
+
+        100% {
+          opacity: 0.8;
+        }
+      }
+    </style>
+  </body>
+</html>

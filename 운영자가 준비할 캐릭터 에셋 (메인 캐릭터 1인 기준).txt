@@ -1,0 +1,203 @@
+운영자가 준비할 캐릭터 에셋 (메인 캐릭터 1인 기준) — v4.5 기준
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+■ 핵심 원칙 (v4.5 변경사항)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- 레퍼런스 이미지는 "각도(angle)" 기준 3종만 준비. 표정은 ComfyUI 프롬프트 텍스트로 지시.
+- 표정별 별도 레퍼런스 파일 불필요 (emotion_timeline 기능 BN-1 결정으로 폐기됨).
+- 한 씬 안에서 표정 변화가 필요하면 씬을 분리해 해결.
+- Node 4가 각도(front/side/back) 기준으로 ref_image_id를 선택하고,
+  ComfyUI(FaceID 0.85 + IP-Adapter 0.65)가 인물 일관성을 유지.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+■ 필수 레퍼런스 이미지 (각도 3종)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+파일명                          ref_image_id                    is_face_anchor  용도
+──────────────────────────────────────────────────────────────────────────────
+char_<key>_front.png            char_<key>_front                true (★핵심)    정면 발화, 클로즈업, FaceID 학습 기준이 되는 앵커 이미지
+char_<key>_side.png             char_<key>_side                 false           측면 이동/인터뷰, 좌우 구분 없이 ComfyUI가 방향 처리
+char_<key>_back.png             char_<key>_back                 false           차트/모니터 응시, 뒷모습 강조 컷
+
+저장 위치: assets/references/char_<key>_<angle>.png
+카탈로그 등록: shared_assets/references_catalog.json > characters > <key>
+
+★ front가 가장 정확해야 나머지가 흔들려도 인물 일관성 유지됨.
+  side / back은 인물 체형·의상 일치만 맞추면 FaceID가 보완함.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+■ 이미지 사양
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- 해상도: 1024×1024 정사각형
+- 배경: 단색 흰색 또는 투명 PNG
+- 얼굴이 프레임 30~50% 차지 (front 기준)
+- 의상·헤어스타일 3종 모두 동일 (인물 정체성 고정)
+- front: 무표정/자연스러운 표정 권장 (FaceID가 표정 편향 없이 학습)
+- side/back: 상반신 전체 보이도록 여백 확보
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+■ references_catalog.json 등록 방법
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+_template 블록을 복사해 캐릭터 키로 등록:
+
+{
+  "display_name": "앵커 김 기자",
+  "appearance_anchor": "A 40-something Korean male anchor, navy suit, burgundy tie, silver-rimmed glasses...",
+  "default_lora": "noir_webtoon_style",
+  "faceid_weight": 0.85,
+  "style_weight": 0.65,
+  "tags": ["male", "korean", "anchor", "suit", "glasses"],
+  "description_search": "korean male anchor 40s navy suit glasses",
+  "description_render": "<appearance_anchor 전문>",
+  "style_anchor_version": "1.0.0",
+  "lora_signature": "noir_webtoon_style@0.65",
+  "usage_count": 0,
+  "created_at": "<ISO 타임스탬프>",
+  "variants": {
+    "front": { "ref_image_id": "char_<key>_front", "file_path": "assets/references/char_<key>_front.png", "is_face_anchor": true,  "usage_hint": "스튜디오 정면 발화 / 클로즈업" },
+    "side":  { "ref_image_id": "char_<key>_side",  "file_path": "assets/references/char_<key>_side.png",  "is_face_anchor": false, "usage_hint": "현장 이동 / 인터뷰 측면" },
+    "back":  { "ref_image_id": "char_<key>_back",  "file_path": "assets/references/char_<key>_back.png",  "is_face_anchor": false, "usage_hint": "차트 모니터 응시 뒷모습" }
+  }
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+■ 표정 연출 방법 (레퍼런스 추가 없이)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Node 3 → Node 4 흐름에서 description_render에 표정 서술어를 추가:
+
+  - 진지/분노:   "...calm authoritative expression, stern furrowed brows"
+  - 우려/슬픔:   "...concerned expression, slightly downcast eyes"
+  - 미소/여유:   "...subtle confident smile"
+  - 놀람:        "...wide-eyed surprised expression"
+  - 풍자/조소:   "...slight smirk, raised eyebrow"
+
+ComfyUI FaceID가 front.png 기준으로 인물 정체성을 잡고,
+프롬프트 텍스트가 표정 변화를 만들어냄 → 별도 PNG 불필요.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+■ 포즈 라이브러리 (별도 에셋 — ControlNet 전용)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+레퍼런스 이미지와 별개로, Node 7 ControlNet 분기(과제 12)에 사용할
+OpenPose 뼈대 PNG 15종을 assets/poses/에 준비.
+카탈로그: shared_assets/pose_library.json
+
+앵커 데스크 정적 8종 (사용 비율 70%):
+  pose_anchor_neutral       양손 책상 위, 정면 응시 — 표준 발화 (씬의 50%)
+  explaining_open           양손 살짝 벌려 설명 (손바닥 위로)
+  explaining_chop           한 손 수직 손날로 핵심 정보 분절
+  finger_count              검지/중지로 항목 카운트
+  thoughtful                한 손 턱 받치고 사색
+  typing                    노트북/태블릿 보며 타이핑
+  glasses_adjust            안경 살짝 고쳐 쓰는 동작
+  listening                 기울인 자세, 귀 기울임
+
+강조 액션 7종 (사용 비율 20%, 챕터당 최대 5씬):
+  pose_pointing_data        차트·지도 방향 손가락 지시
+  pointing_audience         시청자(카메라) 정면 손가락 지시
+  emphasis_fist             주먹 쥐고 책상 두드림 — 강한 주장
+  doc_present               양손으로 서류/태블릿 정면 제시
+  concerned_lean            양 팔꿈치 짚고 앞으로 기울임
+  arms_crossed_authority    팔짱 끼고 약간 뒤로 기댐
+  facepalm_disappointed     한 손 이마/얼굴 짚는 제스처
+
+포즈 이미지 사양:
+  - 1024×1024 OpenPose 뼈대 PNG (머리·어깨·팔·손목·고관절 keypoint 명확히)
+  - 앵커 책상 뒤 상반신 컷 기준 (하반신 keypoint 선택)
+  - 투명 배경 또는 단색 흰색
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+■ 정적 에셋 24종 (assets/static/)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+카탈로그: shared_assets/references_catalog.json > static_assets
+ID 매칭 전용 (임베딩 검색 없이 Node 4가 정확 ID로 참조)
+
+국기 8종:
+  static_flag_kr / us / cn / jp / ru / uk / de / eu
+
+화살표 4종:
+  static_arrow_up / down / right / left
+
+심볼 5종:
+  static_x_mark / check_mark / exclamation / question / warning_triangle
+
+소품 5종:
+  static_bomb / money_bundle / briefcase / magnifier / target
+
+데이터보조 3종 (2개):
+  static_chart_up / chart_down / percent_sign
+
+이미지 사양:
+  - 512×512 이상, 투명 PNG 또는 WebP (알파 채널 필수)
+  - 깔끔한 벡터 스타일 권장 (누아르 톤 호환)
+  - 파일 저장: assets/static/<asset_id>.png
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+■ GeoJSON 데이터 (shared_assets/geo/)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+world.geo.json에 실제 국가 polygon 데이터 채우기:
+
+1. natural-earth 1:50m shapefile 다운로드
+   https://www.naturalearthdata.com/downloads/50m-cultural-vectors/
+2. ISO3_WHITELIST 40개국만 필터 (template.html 과제 13과 동기화)
+3. 좌표 정밀도 소수점 5자리로 압축 (파일 크기 절감)
+4. shared_assets/geo/world.geo.json의 features 배열 교체
+
+완료 후 ECharts effectScatter 좌표가 [0,0] placeholder -> 실제 lat/lon으로 대체됨
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+■ 환경 구축 체크리스트
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] 1. ComfyUI 설치 + 실행 확인
+    - FLUX.1-schnell GGUF 모델 2종 배치:
+      * Q5_K_M (Auto 모드 기본, ~7.5GB VRAM)
+      * Q4_K_M (Controlled 모드 자동 다운그레이드, ~6.0GB VRAM)
+    - 저장 위치: ComfyUI/models/unet/ (또는 checkpoints/)
+
+[ ] 2. ComfyUI 추가 모델 설치
+    - FaceID 모델 (IPAdapter FaceID Plus v2 권장)
+    - IP-Adapter 모델 (ip-adapter-plus_sd15 또는 FLUX 호환)
+    - ControlNet OpenPose 모델
+    - LoRA: noir_webtoon_style (또는 프로젝트 전용 LoRA)
+    - BRIA RMBG 또는 LayerDiffusion (배경 제거용)
+
+[x] 3. Rhubarb Lip Sync CLI
+    - 다운로드: https://github.com/DanielSWolf/rhubarb-lip-sync/releases (완료)
+    - 설치 경로: C:\rhubarb\rhubarb.exe (확인됨)
+    - 검증: rhubarb --version (1.13.0 확인 완료)
+
+[x] 4. HyperFrames CLI
+    - npm install -g hyperframes (완료)
+    - 검증: hyperframes --version (0.4.41 확인 완료)
+
+[x] 5. FFmpeg / FFprobe
+    - 시스템 PATH에 등록 (확인됨: C:\ffmpeg\bin)
+    - h264_qsv 지원 확인 (Intel Quick Sync): (확인됨)
+      ffmpeg -encoders | findstr qsv
+    - 미지원 시 소프트웨어 인코더(libx264) 폴백 가능
+
+[x] 6. n8n
+    - npm install -g n8n (완료, v2.17.6)
+    - 환경변수 설정 확인 필요 (운영자)
+    - 기동: n8n start (환경 확인 완료)
+
+[x] 7. 임베딩 모델 (hnswlib 검색용)
+    - sentence-transformers/all-MiniLM-L6-v2 로컬 다운로드 (완료)
+    - Python: pip install sentence-transformers (완료)
+    - 첫 로드 시 자동 다운로드 완료 (~80MB)
+
+[/] 8. Node.js 패키지
+    - [!] hnswlib-node: 빌드 실패 (VS Build Tools 필요). 코사인 직접 계산 폴백 모드로 작동 가능.
+    - [x] adm-zip: npm install adm-zip (완료)
+    - [x] sharp: WebP 변환용 (완료)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+■ 파이프라인 가동 전 최종 확인
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] 캐릭터 레퍼런스 3종 준비 완료 (front/side/back)
+[ ] references_catalog.json에 캐릭터 등록 완료
+[ ] ComfyUI API 서버 기동 (기본 http://127.0.0.1:8188)
+[ ] n8n 기동 + Master/Sub 워크플로우 임포트
+[ ] 테스트 대본 + SRT + mp3 + .vrew 1세트 준비
+[ ] 첫 챕터 단독 테스트 실행 → 에러 로그 확인

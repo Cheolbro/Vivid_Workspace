@@ -1,0 +1,82 @@
+{
+  "$schema_version": "1.0.0",
+  "last_updated": "2026-04-30",
+  "description": "ISO3 alpha-3 -> 지역 매핑 (과제 20). template.html [15] Data Viz Engine의 ISO3_WHITELIST와 동기화. data_layer.focus_region이 'East_Asia' 등 지역명을 받으면 해당 ISO3 배열로 확장.",
+  "_iso3_whitelist_sync": "shared_assets/template.html ISO3_WHITELIST(40개)와 정합 — 추가/제거 시 양쪽 모두 갱신.",
+  "regions": {
+    "East_Asia": {
+      "display_name": "동아시아",
+      "iso3": ["KOR", "JPN", "CHN", "PRK", "TWN"],
+      "default_color": "#FF4500",
+      "_comment": "한반도·중·일·대만"
+    },
+    "Middle_East": {
+      "display_name": "중동",
+      "iso3": [
+        "IRN",
+        "IRQ",
+        "SAU",
+        "ISR",
+        "TUR",
+        "EGY",
+        "SYR",
+        "LBN",
+        "JOR",
+        "YEM",
+        "ARE",
+        "QAT",
+        "KWT",
+        "OMN"
+      ],
+      "default_color": "#DC143C",
+      "_comment": "분쟁·에너지 이슈 빈번 지역"
+    },
+    "Europe": {
+      "display_name": "유럽",
+      "iso3": ["GBR", "FRA", "DEU", "ITA", "ESP", "POL", "UKR", "HRM"],
+      "default_color": "#4682B4",
+      "_comment": "주요 EU + 영국·우크라이나·크로아티아(HRM은 화이트리스트 호환 코드)"
+    },
+    "North_America": {
+      "display_name": "북미",
+      "iso3": ["USA", "CAN", "MEX"],
+      "default_color": "#00BFFF",
+      "_comment": "USMCA 권역"
+    },
+    "South_America": {
+      "display_name": "남미",
+      "iso3": ["BRA"],
+      "default_color": "#FFD700",
+      "_comment": "브라질 (확장 시 ARG/CHL/COL 추가 권장)"
+    },
+    "South_Asia": {
+      "display_name": "남아시아",
+      "iso3": ["IND", "PAK", "AFG"],
+      "default_color": "#FF8C00",
+      "_comment": "인도·파키스탄·아프가니스탄"
+    },
+    "Southeast_Asia": {
+      "display_name": "동남아시아",
+      "iso3": ["THA", "VNM", "IDN", "SGP"],
+      "default_color": "#32CD32",
+      "_comment": "ASEAN 핵심 4개국"
+    },
+    "Oceania": {
+      "display_name": "오세아니아",
+      "iso3": ["AUS"],
+      "default_color": "#9370DB",
+      "_comment": "호주 (확장 시 NZL 추가 권장)"
+    },
+    "Eurasia": {
+      "display_name": "유라시아",
+      "iso3": ["RUS"],
+      "default_color": "#A9A9A9",
+      "_comment": "러시아"
+    }
+  },
+  "lookup_helpers": {
+    "iso3_to_region": "Build at runtime: Object.entries(regions).flatMap(([region, data]) => data.iso3.map(iso => [iso, region]))",
+    "expand_region_to_iso3": "regions[region_name].iso3 returns ISO3 array",
+    "_comment": "Node 3 출력 data_layer.focus_region이 region_name이면 expand_region_to_iso3로 ISO3 배열 확장 후 highlight[]에 주입."
+  }
+}

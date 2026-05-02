@@ -1,0 +1,75 @@
+{
+  "$schema_version": "1.0.0",
+  "last_updated": "2026-04-30",
+  "description": "누아르 테마 색상 프리셋 (과제 20). data_layer 차트·지도 렌더링 시 ECharts/Chart.js 색상 토큰으로 사용. project_config.json의 accent_hue/sat과 별개 — 데이터 시각화 전용 의미 색상.",
+  "background": {
+    "page": "#0a0a0f",
+    "panel_dark": "#16161e",
+    "panel_mid": "#22222e",
+    "panel_light": "#2e2e3a"
+  },
+  "semantic": {
+    "highlight": "#FF4500",
+    "_highlight_comment": "주요 강조 (focus_region, 핵심 데이터 포인트)",
+    "secondary": "#00BFFF",
+    "_secondary_comment": "보조 강조 (대조군·비교 대상)",
+    "danger": "#DC143C",
+    "_danger_comment": "위험·하락·부정",
+    "safe": "#4682B4",
+    "_safe_comment": "안정·정상 범위",
+    "warning": "#FFD700",
+    "_warning_comment": "주의·경고",
+    "neutral": "#A9A9A9",
+    "_neutral_comment": "비활성·기본"
+  },
+  "text": {
+    "primary": "#f5f5f5",
+    "secondary": "#dddddd",
+    "muted": "#888892",
+    "title": "#ffffff"
+  },
+  "chart_palette_sequential": ["#FF4500", "#FF6E2B", "#FF9456", "#FFB781", "#FFD9AC"],
+  "_chart_palette_sequential_comment": "단일 시계열 그라디언트 (line/area)",
+  "chart_palette_categorical": [
+    "#FF4500",
+    "#00BFFF",
+    "#FFD700",
+    "#32CD32",
+    "#9370DB",
+    "#DC143C",
+    "#4682B4"
+  ],
+  "_chart_palette_categorical_comment": "카테고리 비교 (bar/pie 다중 시리즈)",
+  "chart_palette_diverging": ["#DC143C", "#FF4500", "#A9A9A9", "#4682B4", "#00BFFF"],
+  "_chart_palette_diverging_comment": "양극 비교 (음수↔양수, 위험↔안전)",
+  "map_defaults": {
+    "land": "#22222e",
+    "land_border": "#404048",
+    "ocean": "#0a0a0f",
+    "highlight_country": "#FF4500",
+    "route_line": "#00BFFF",
+    "route_glow": "#00BFFF66"
+  },
+  "echarts_theme_skeleton": {
+    "_comment": "ECharts registerTheme()용 부분 객체 — 필요 시 setOption 시 echarts.init(el, 'noir') 후 적용",
+    "backgroundColor": "transparent",
+    "textStyle": {
+      "color": "#f5f5f5",
+      "fontFamily": "Pretendard, sans-serif"
+    },
+    "title": {
+      "textStyle": {
+        "color": "#ffffff",
+        "fontWeight": "bold"
+      }
+    },
+    "color": ["#FF4500", "#00BFFF", "#FFD700", "#32CD32", "#9370DB"]
+  },
+  "chartjs_defaults_skeleton": {
+    "_comment": "Chart.js datasets[].borderColor / backgroundColor 기본값 가이드",
+    "borderColor": "#FF4500",
+    "backgroundColor": "rgba(255, 69, 0, 0.25)",
+    "gridColor": "#2e2e3a",
+    "tickColor": "#dddddd"
+  }
+}

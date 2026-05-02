@@ -1,0 +1,168 @@
+{
+  "$schema_version": "1.0.0",
+  "description": "Progressive Branding configuration (§2.7). The 'baseline' block is the operator-managed center value; the pipeline auto-generates per-video randomized overrides within the declared jitter range and writes them to 'per_video_overrides'. template.html consumes the resolved values via DATA.branding.",
+  "baseline": {
+    "_meta": {
+      "last_baseline_update": "2026-04-29",
+      "next_review_due": "2026-10-29",
+      "review_cadence_months": 6,
+      "owner_note": "운영자가 약 6개월 주기로 직접 수정. 파이프라인 자동화 범위 밖."
+    },
+    "watermark": {
+      "image_path": "shared_assets/watermark.png",
+      "position_x_baseline_px": 30,
+      "position_y_baseline_px": 30,
+      "position_jitter_px": 15,
+      "size_px": 120,
+      "opacity_min": 0.25,
+      "opacity_max": 0.4,
+      "_comment": "right/bottom 기준. 영상별 랜덤 변동 범위는 baseline ± position_jitter_px."
+    },
+    "accent_color_hsl": {
+      "hue_baseline": 220,
+      "hue_jitter_deg": 5,
+      "saturation_baseline_pct": 80,
+      "saturation_jitter_pct": 5,
+      "lightness_pct": 55,
+      "_comment": "예) hue 220, sat 80 -> 영상별 hue 215~225, sat 75~85. lightness는 고정."
+    },
+    "vignette": {
+      "alpha_min": 0.7,
+      "alpha_max": 0.95,
+      "_comment": "radial-gradient ellipse at center, transparent 50% -> rgba(0,0,0,alpha) 100%. 영상별 alpha 랜덤."
+    },
+    "subtitle_gradient": {
+      "height_px": 220,
+      "top_alpha": 0.0,
+      "mid_alpha": 0.4,
+      "bottom_alpha": 0.9,
+      "_comment": "§2.5 Seamless Bleeding. 변동 대상 아님 (시각 일관성을 위해 고정)."
+    },
+    "target_fps": 30,
+    "_target_fps_comment": "MO-6 보정. 30fps 고정. 영상별 변동 없음. 다른 값으로 변경은 baseline 직접 수정 필요.",
+    "encoding": {
+      "crf_min": 19,
+      "crf_max": 21,
+      "maxrate_mbps": 14,
+      "bufsize_mbps": 28,
+      "gop_min": 90,
+      "gop_max": 150,
+      "hw_accel": "h264_qsv",
+      "_comment": "EF-4 + BN-2. Intel Quick Sync 하드웨어 가속 + CRF 19~21 무작위 + maxrate/GOP 변동으로 양산 검열 회피."
+    },
+    "image_format": {
+      "primary": "webp_lossless",
+      "fallback_lossy_quality": 95,
+      "_comment": "BN-2. 디스크 압박 시 lossy 95%로 단계적 전환 가능."
+    },
+    "comfyui": {
+      "model_quantization": "Q5_K_M",
+      "fallback_quantization": "Q4_K_M",
+      "sampling_steps": 3,
+      "fallback_sampling_steps": 4,
+      "_comment": "BN-1. 시스템 OOM 또는 품질 부족 시 fallback 값으로 운영자 조정."
+    },
+    "parallax_speed_multipliers": {
+      "bg": 0.3,
+      "props": 0.7,
+      "character": 1.0,
+      "foreground": 1.5,
+      "_comment": "§2.1 Z-Depth 속도 차등. baseline 고정, 영상별 변동 없음."
+    },
+    "frame_fp": {
+      "micro_drift_intensity": 0.5,
+      "chroma_offset_max": 0.3,
+      "bg_offset_range": 1.5,
+      "luminance_opacity_max": 0.04,
+      "_comment": "과제 25 프레임 지문 분산 엔진 baseline. 각 값은 randomization_rules의 상한 역할. 0으로 설정 시 해당 기법 비활성."
+    }
+  },
+  "per_video_overrides": {
+    "_comment": "파이프라인이 영상 단위로 자동 생성하여 기록. key = video_id (예: 'vivid_2026_04_29_001'). template.html의 DATA.branding은 여기서 읽어옴.",
+    "_example_vivid_2026_04_29_001": {
+      "generated_at": "2026-04-29T10:00:00Z",
+      "video_id": "vivid_2026_04_29_001",
+      "source_baseline_version": "1.0.0",
+      "watermark_x": 22,
+      "watermark_y": 38,
+      "watermark_opacity": 0.31,
+      "accent_hue": 217,
+      "accent_sat": 78,
+      "vignette_alpha": 0.83
+    }
+  },
+  "randomization_rules": {
+    "rng_seed_strategy": "video_id 기반 결정론적 시드. 동일 video_id 재실행 시 동일한 변동값 재현 보장.",
+    "watermark_x": {
+      "formula": "baseline.watermark.position_x_baseline_px + uniform(-jitter, +jitter)",
+      "clamp": [10, 60]
+    },
+    "watermark_y": {
+      "formula": "baseline.watermark.position_y_baseline_px + uniform(-jitter, +jitter)",
+      "clamp": [10, 60]
+    },
+    "watermark_opacity": {
+      "formula": "uniform(opacity_min, opacity_max)",
+      "decimals": 2
+    },
+    "accent_hue": {
+      "formula": "baseline.accent_color_hsl.hue_baseline + uniform(-hue_jitter_deg, +hue_jitter_deg)",
+      "wrap": 360
+    },
+    "accent_sat": {
+      "formula": "baseline.accent_color_hsl.saturation_baseline_pct + uniform(-saturation_jitter_pct, +saturation_jitter_pct)",
+      "clamp": [0, 100]
+    },
+    "vignette_alpha": {
+      "formula": "uniform(alpha_min, alpha_max)",
+      "decimals": 2
+    },
+    "frame_fp_micro_drift_intensity": {
+      "formula": "uniform(0.3, baseline.frame_fp.micro_drift_intensity)",
+      "decimals": 2,
+      "_comment": "과제 25-A: 0이면 비활성, 값 비례 x/y ±px 범위 확대"
+    },
+    "frame_fp_chroma_r_offset": {
+      "formula": "uniform(-baseline.frame_fp.chroma_offset_max, +baseline.frame_fp.chroma_offset_max)",
+      "decimals": 2,
+      "_comment": "과제 25-B: R채널 feOffset dx (px)"
+    },
+    "frame_fp_chroma_b_offset": {
+      "formula": "uniform(-baseline.frame_fp.chroma_offset_max, +baseline.frame_fp.chroma_offset_max)",
+      "decimals": 2,
+      "_comment": "과제 25-B: B채널 feOffset dx (px)"
+    },
+    "frame_fp_bg_offset_x": {
+      "formula": "50 + uniform(-baseline.frame_fp.bg_offset_range, +baseline.frame_fp.bg_offset_range)",
+      "decimals": 2,
+      "_comment": "과제 25-C: objectPosition X% (중앙 50 기준 변동)"
+    },
+    "frame_fp_bg_offset_y": {
+      "formula": "50 + uniform(-baseline.frame_fp.bg_offset_range, +baseline.frame_fp.bg_offset_range)",
+      "decimals": 2,
+      "_comment": "과제 25-C: objectPosition Y%"
+    },
+    "frame_fp_luminance_opacity": {
+      "formula": "uniform(0.01, baseline.frame_fp.luminance_opacity_max)",
+      "decimals": 3,
+      "_comment": "과제 25-D: 플리커 최대 opacity 상한"
+    }
+  },
+  "consumer_contract": {
+    "template_html_keys": [
+      "watermark_x",
+      "watermark_y",
+      "watermark_opacity",
+      "vignette_alpha",
+      "accent_hue",
+      "accent_sat",
+      "frame_fp_micro_drift_intensity",
+      "frame_fp_chroma_r_offset",
+      "frame_fp_chroma_b_offset",
+      "frame_fp_bg_offset_x",
+      "frame_fp_bg_offset_y",
+      "frame_fp_luminance_opacity"
+    ],
+    "_comment": "Node 10 (Master Assembler)이 per_video_overrides[video_id]를 DATA.branding으로 주입. template.html applyBranding()이 위 키들을 직접 읽음. frame_fp_* 키는 과제 25 프레임 지문 분산 엔진 소비."
+  }
+}

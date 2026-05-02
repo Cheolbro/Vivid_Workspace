@@ -1,0 +1,655 @@
+# VIVID Studio 모션 코믹 파이프라인 기능 명세서 (v4.5)
+
+## 1. 시스템 개요 및 고도화 목표
+
+본 명세는 v4.0 파이프라인을 토대로, **'지식해적단'식 정보 전달력**과 **'극주부도'식 다이내믹 리미티드 애니메이션 연출**을 통합하기 위해 추가하는 4대 고도화 기능을 정의합니다.
+
+핵심 설계 원칙:
+
+- **하이브리드 렌더링 아키텍처:** 생성형 AI(FLUX.1)의 창의성, HTML/GSAP 기반 정밀 데이터 시각화(지도·차트), 정적 에셋 조립을 단일 파이프라인 안에서 역할 분담시킵니다.
+- **자가 발전(Self-Evolving) 에셋 시스템:** 파이프라인이 구동될수록 사용자의 수동 개입 없이 소품·밈 라이브러리가 자동 확장됩니다.
+- **AI 창의성 보존:** 사전 정의된 라이브러리(포즈, 정적 에셋, 이펙트)는 강제가 아닌 **선택지**로 운용합니다. LLM(Node 3·4)이 매 씬마다 라이브러리를 쓸지 FLUX 신규 생성을 쓸지 직접 판단합니다.
+- **연출 감독 권한 위임:** "언제 AI 창의성을 쓰고, 언제 시스템 통제력을 쓸지"의 결정권은 항상 LLM(Node 3·4)이 갖습니다. 본 명세는 그 결정 도구만 제공합니다.
+- **편집 친화적 객체 분리:** 모든 시각 객체는 처음부터 독립 레이어로 분리되어 미리보기 편집기(과제 6)가 객체 단위로 hit-test/이동/리사이즈/회전 가능해야 합니다.
+- **시간 결정론:** 모든 라이브러리 애니메이션은 자체 타이머를 OFF하고 GSAP 마스터 타임라인이 외부에서 제어합니다. HyperFrames `VIVID_SEEK(t)` 결정론과 100% 동기화.
+
+---
+
+## 2. 핵심 기능 명세
+
+### 2.1 하이브리드 포즈 제어 시스템 (Selective ControlNet)
+
+FLUX의 창의적 구도를 기본 모드로 두되, 대본상 **확정적 액션**이 필요한 핵심 컷에서만 ControlNet 뼈대를 강제하여 IP-Adapter의 '증명사진 현상'을 방어합니다.
+
+#### 2.1.1 포즈 라이브러리(Pose Library) 구축
+
+- 디렉토리: `assets/poses/<pose_id>.png` (OpenPose 포맷 뼈대 이미지, 1024×1024)
+- 카탈로그: `shared_assets/pose_library.json` — 각 pose_id에 다음 메타데이터 매핑:
+  - `display_name`, `usage_hint`
+  - `category`: `"static"` | `"action"` (Node 3가 씬 톤에 맞춰 비율 조절)
+  - `applicable_camera`: `"close-up"` | `"full-body"`
+  - **`applicable_character_angle`**: `["front"]` 또는 `["side_left", "side_right"]` 등 (W-2 보정) — Node 4가 character variant 매칭 시 사용
+
+#### 2.1.2 정보성 채널 권장 초기 라이브러리 15종 (E-2)
+
+**앵커 데스크 정적 포즈 8종** (`category: "static"`, 사용 빈도 70%)
+
+| pose_id                       | 자연어 묘사                             | 적용 맥락              | applicable_character_angle                      |
+| ----------------------------- | --------------------------------------- | ---------------------- | ----------------------------------------------- |
+| `pose_anchor_neutral`         | 양손 책상 위 자연스럽게 모음, 정면 응시 | 표준 발화 (씬의 50%)   | `["front"]`                                     |
+| `pose_anchor_explaining_open` | 양손 살짝 벌려 설명, 손바닥 위로        | 일반 설명              | `["front"]`                                     |
+| `pose_anchor_explaining_chop` | 한 손 수직으로 가르며 강조              | 핵심 정보 분절         | `["front"]`                                     |
+| `pose_anchor_finger_count`    | 한 손 검지/중지 들어 항목 카운트        | "첫째, 둘째…" 나열     | `["front"]`                                     |
+| `pose_anchor_thoughtful`      | 한 손 턱 받치고 사색                    | 의문 제기, 반문        | `["front", "three_quarter_left"]`               |
+| `pose_anchor_typing`          | 노트북/태블릿 보며 타이핑               | 데이터 분석, 자료 인용 | `["three_quarter_left", "three_quarter_right"]` |
+| `pose_anchor_glasses_adjust`  | 안경 다리 잡고 고쳐 쓰기                | 권위 확립, 정정        | `["front", "three_quarter_right"]`              |
+| `pose_anchor_listening`       | 약간 기울인 자세, 귀 기울임             | 인터뷰 수신, 청취      | `["three_quarter_left", "three_quarter_right"]` |
+
+**강조 액션 포즈 7종** (`category: "action"`, 사용 빈도 30%)
+
+| pose_id                       | 자연어 묘사                         | 적용 맥락                  | applicable_character_angle         |
+| ----------------------------- | ----------------------------------- | -------------------------- | ---------------------------------- |
+| `pose_pointing_data`          | 옆/아래로 손가락 가리킴             | 차트·지도 지시             | `["front", "three_quarter_right"]` |
+| `pose_pointing_audience`      | 정면(시청자) 손가락 가리킴          | "여러분도 해당됩니다" 환기 | `["front"]`                        |
+| `pose_emphasis_fist`          | 한 손 주먹 쥐고 책상 두드림         | 강한 주장, 결의            | `["front"]`                        |
+| `pose_doc_present`            | 양손으로 서류/태블릿 정면 제시      | 자료 공개, 증거 제시       | `["front"]`                        |
+| `pose_concerned_lean`         | 책상에 양 팔꿈치 짚고 앞으로 기울임 | 우려 강조, 친밀한 톤       | `["front", "three_quarter_left"]`  |
+| `pose_arms_crossed_authority` | 팔짱 끼고 약간 뒤로 기댐            | 비판, 권위적 평가          | `["front", "three_quarter_right"]` |
+| `pose_facepalm_disappointed`  | 한 손 이마/얼굴 짚는 제스처         | 한심함, 실망, 풍자         | `["front"]`                        |
+
+**LLM 비율 강제 지침 (Node 3 시스템 프롬프트):**
+
+> "정보성 영상에서 `static` 카테고리 포즈를 70%, `action` 카테고리를 20% 비율로 사용하라. 나머지 10%는 `pose:"auto"`로 두어 FLUX 창의성에 맡겨라. action 포즈는 챕터당 최대 5씬 이하로 제한."
+
+#### 2.1.3 Node 4 출력 스키마 — `pose` 필드
+
+| 모드           | JSON 값                           | 적용 ControlNet | IP-Adapter Weight    | FaceID Weight |
+| -------------- | --------------------------------- | --------------- | -------------------- | ------------- |
+| **Auto**       | `"pose": "auto"` (또는 생략)      | 미적용          | 0.65 (기본)          | 0.85          |
+| **Controlled** | `"pose": "pose_emphasis_fist"` 등 | OpenPose        | **0.30~0.40** (낮춤) | 0.85 (유지)   |
+
+**Controlled 모드 character variant 매칭**:
+
+- `pose_library.json[pose_id].applicable_character_angle`을 참조하여 character의 가용 variant 중 첫 매칭을 선택.
+- pose 강제 시 character variant가 없으면 **자동으로 `front_neutral` 폴백** (FaceID 정면 학습이 가장 안정).
+
+#### 2.1.4 Node 7 ComfyUI 워크플로우 분기
+
+- `pose: "auto"` → 기존 [Prompt + FaceID + IP-Adapter(0.65)] 그대로
+- `pose: "<id>"` → [Prompt + FaceID(0.85) + IP-Adapter(0.35) + ControlNet(OpenPose)] 분기 활성화, `assets/poses/<pose_id>.png`를 LoadImage로 ControlNet에 주입
+
+#### 2.1.5 자가 발전: 신규 포즈 자동 누적
+
+- LLM이 라이브러리에 없는 포즈가 필요할 때 `pose: "auto"`로 폴백 — 단, `pose_request: "<자연어 묘사>"` 필드도 함께 출력하여 운영 로그에 기록.
+- 누적된 `pose_request`는 별도 보조 노드 또는 운영자가 검토하여 신규 OpenPose 뼈대를 추가.
+- 향후 옵션: ComfyUI에 `DWPose` 또는 `MediaPipe` 노드를 추가해 자연어 묘사 → 뼈대 자동 생성. (선택 구현)
+- 3개월 사용 통계로 리밸런싱: `usage_count` 기준 하위 3개 폐기 후보 / 상위 3개 변형 추가 (예: `_v2`).
+
+---
+
+### 2.2 자가 발전형 에셋 라이브러리 (Auto-Archiving)
+
+정적 에셋의 **재사용성**과 FLUX의 **창작 자유**를 동시에 보장합니다. 정적 에셋은 강제 사용이 아니며, 매 씬마다 LLM이 직접 판단하여 호출합니다.
+
+#### 2.2.1 references_catalog.json 카테고리 확장
+
+기존 `characters` / `props` 옆에 신규 카테고리 2개 추가:
+
+- `static_assets`: 운영자가 수동 등재한 범용 밈/아이콘 (국기 컨트리볼, 화살표, X표, 느낌표, 폭탄, 돈다발 등) — **임베딩 검색 X, ID 매칭만**
+- `auto_generated_assets`: 파이프라인이 영상 제작 중 자동 등재한 신규 소품 (자가 발전 영역) — 임베딩 검색 대상
+
+각 항목 공통 필드:
+
+- `asset_id`, `display_name`, `file_path`, `created_at`, `usage_count`, `tags[]`(검색 태그)
+- **`description_search`** (W-3): 임베딩 검색용 — 화풍 토큰 **제거**한 핵심 명사구만
+  - 예: `"folded broadsheet economic newspaper, bold black headline, stock chart"`
+- **`description_render`** (W-3): ComfyUI 프롬프트 입력용 — 화풍 앵커 **포함**
+  - 예: 위 + `", informative webtoon style, noir economic illustration, bold clean vector lines"`
+- **`style_anchor_version`** (W-4 안전장치): 글로벌 화풍 앵커 버전 (예: `"v1.0"`) — 갱신 시점 추적
+- **`lora_signature`** (W-4 안전장치): 사용된 LoRA 이름과 가중치의 해시 — 다른 LoRA 영상에서는 매칭 후보에서 자동 제외
+- `seed`: **재생성용 메타데이터로만 보관** (PNG 재사용 시 미사용)
+
+#### 2.2.2 글로벌 화풍 앵커 (W-3)
+
+`references_catalog.json` 상단에 글로벌 변수 신설:
+
+```json
+{
+  "global_style_anchor": "informative webtoon style, noir economic illustration, bold clean vector lines",
+  "style_anchor_version": "v1.0",
+  "characters": { ... },
+  "props": { ... },
+  "static_assets": { ... },
+  "auto_generated_assets": { ... }
+}
+```
+
+- Node 4의 `description_render`는 자동으로 글로벌 앵커를 suffix로 주입 (LLM이 빠뜨릴 수 없도록 코드 레벨 강제).
+- 운영자가 6개월에 한 번 글로벌 앵커를 갱신하면 그 시점부터 모든 신규 에셋이 새 톤 채택 → 자연스러운 점진 진화.
+- `style_anchor_version`이 미스매치되는 auto_generated 에셋은 매칭 후보에서 우선순위 강등(자동 제외 아님 — 점진적 폐기 신호).
+
+#### 2.2.3 Node 4 카테고리 검색 우선순위 (W-1 최종 결정)
+
+LLM이 매 시각 객체 프롬프트 생성 시 다음 순위로 카탈로그 검색:
+
+| 순위 | 카테고리                | 채택 조건                                         | ComfyUI 호출                 |
+| ---- | ----------------------- | ------------------------------------------------- | ---------------------------- |
+| 1    | `characters`            | `match_score ≥ 0.7` 시 채택, FaceID 강제          | 1회 (text2img + FaceID)      |
+| 2    | `static_assets`         | 정확한 ID 매칭 시 채택, 임베딩 검색 X             | **0회** (즉시 사용)          |
+| 3    | `auto_generated_assets` | 코사인 유사도 ≥ 0.85 시 채택                      | **0회** (PNG 재사용)         |
+| 4    | `props`                 | `match_score ≥ 0.7` 시 img2img 호출 (denoise 0.5) | 1회                          |
+| 5    | `generate_asset: true`  | 위 전부 미스 시 신규 창작                         | 1회 (Node 8.5에서 자동 등재) |
+
+**핵심 규칙:**
+
+- `match_score`는 LLM이 직접 출력하며, 0.7 미만이면 **다음 순위로 자동 폴백**.
+- `auto_generated_assets`가 `props`보다 우선인 이유: PNG 재사용 → ComfyUI 호출 0회로 시간 절감 효과 직접 발생.
+
+#### 2.2.4 3계층 캐시 정책 (C-2 최종 결정)
+
+ComfyUI 호출 발생 가능 시점 직전, 다음 3단계 우선순위로 호출 회피 시도:
+
+| 계층                           | 발동 시점                         | 메커니즘                                                                                                       |
+| ------------------------------ | --------------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------ | --------------------------------------------------------------------------------- |
+| **L1** — `reuse_asset_id` 명시 | Node 4 출력에 명시된 경우         | Node 4가 카탈로그에서 직접 지정한 재사용. ComfyUI 완전 스킵, Node 7/8 모두 통과.                               |
+| **L2** — 임베딩 검색           | Node 4 단계, L1 미적용 시         | `description_search` 임베딩 + 코사인 ≥ 0.85 매칭. 매칭 시 Node 4가 `reuse_asset_id`로 출력하여 L1 경로로 합류. |
+| **L3** — SHA1 캐시             | Node 7 단계, L1·L2 모두 미적용 시 | `SHA1(ref_image_id + "                                                                                         | " + seed + " | " + prompt)`키로`project/asset_cache/` 검색. 캐시 히트 시 ComfyUI 호출 직전 회피. |
+
+**작동 원리:**
+
+- L1·L2는 **Node 4 단에서** 이미 결정되며 Node 7은 호출 자체가 없음.
+- L3는 같은 영상의 같은 씬 재실행(파이프라인 중단 후 재시작) 시 효과 발휘.
+- 세 계층의 각 결과는 **서로 다른 파일을 가리키지 않음** — 매핑이 일관되게 유지됨.
+
+#### 2.2.5 [Node 8.5] Asset Archiver — 위치 보정 (C-1 최종 결정)
+
+**위치**: Node 9(파일명 규격화) **직후**로 배치 (기존 v4.5 초안 위치에서 변경).
+
+**이유**: Node 8 직후 시점에는 ComfyUI 산출물이 아직 난수 파일명(`ComfyUI_00123_.png`) 상태라 의미 있는 이름이 없음. Node 9가 정규화한 `scene_NN_<scene_asset_id>.png`를 받아서 사본을 아카이빙.
+
+**동작 로직:**
+
+1. Node 9 산출물 중 `generate_asset: true`로 마킹된 소품/캐릭터만 대상.
+2. ComfyUI 워크플로우 마지막에 `rembg` 또는 `LayerDiffusion` 노드를 통과한 투명 PNG인지 검증.
+3. **사본**(deep copy)을 `assets/static/auto_generated/<auto_yyyymmdd_<hash>>.png`에 영구 저장. 원본은 씬 폴더에 그대로 유지.
+4. **File Lock 확보** (W-7): `references_catalog.json.lock` 파일을 atomic하게 생성 → 카탈로그 read-modify-write → lock 해제. (Node.js 라이브러리 `proper-lockfile` 또는 OS 기본 fcntl 사용. n8n 직렬 mutex로도 우회 가능.)
+5. `auto_generated_assets` 섹션에 신규 항목 추가:
+   - `asset_id`: `auto_<해시>`
+   - `description_search`: 화풍 토큰 제거한 핵심 명사구
+   - `description_render`: 화풍 앵커 포함된 원본 프롬프트
+   - `tags[]`: Node 4가 출력한 검색 태그
+   - `created_at`, `usage_count: 0`, `source_video_id`
+   - `seed`, `lora_signature`, `style_anchor_version`
+6. 비대화 방지: `usage_count == 0`이고 6개월 이상 미사용된 항목은 운영자가 수동 청소 (자동 삭제 금지).
+
+#### 2.2.6 임베딩 검색 구현 단계 (E-3 최종 결정)
+
+| Phase                | 카탈로그 규모 | 권장 검색 방식              | 의존성                                     |
+| -------------------- | ------------- | --------------------------- | ------------------------------------------ |
+| 초기 (영상 ~10편)    | < 100개       | Naive 전수 비교             | 없음                                       |
+| 중기 (영상 10~50편)  | 100~200개     | 카테고리 분할 + Naive       | 없음                                       |
+| 후기 (영상 50편+)    | 200~1000개    | **카테고리 분할 + hnswlib** | `hnswlib-node` (Node) / `hnswlib` (Python) |
+| 대규모 (영상 100편+) | 1000개+       | hnswlib 인덱스 별도 파일    | 인덱스 파일 `references_catalog.idx`       |
+
+- **카테고리 분할은 항상 적용** (검색 대상 N을 1/4로 축소).
+- 카탈로그 200개 초과 시 자동 알림 → 운영자가 hnswlib 도입 트리거.
+- 인덱스 갱신: Node 8.5가 항목 추가 시 인덱스에도 동시 `addPoint`.
+
+#### 2.2.7 LLM 통제 지침 (Node 3·4 프롬프트에 강제 주입)
+
+> "씬 시각 요소는 다음 우선순위로 결정한다:
+>
+> 1. **정확한 지리·수치**(국가 영토, 무역로, 차트 데이터) → `data_layer` 호출 (지도/차트는 절대 AI에게 그리게 하지 마라).
+> 2. **범용 기호·밈**(국기, 화살표, X표, 폭탄, 돈다발) → `static_assets` 직접 ID 호출.
+> 3. **재사용 검색**: 신규 창작 전에 반드시 `auto_generated_assets`의 `description_search` 임베딩 매칭을 시도. 코사인 ≥ 0.85 또는 핵심 태그 3개 일치 시 `reuse_asset_id`로 출력.
+> 4. **캐릭터** (`characters` 카탈로그): `match_score ≥ 0.7`이면 채택, 부족하면 다음 순위로.
+> 5. **고유 소품 레퍼런스** (`props`): `match_score ≥ 0.7`이면 img2img.
+> 6. 위 전부 미스 시 `generate_asset: true`로 신규 창작 + `tags[]` + `description_search` + `description_render` 강제 출력.
+>
+> 정적 에셋은 **그 맥락에 진짜로 적합할 때만** 사용한다. 단순 장식 목적의 남발 금지."
+
+---
+
+### 2.3 데이터 시각화 엔진 (Data Viz Module)
+
+AI가 그리기 어려운 **정밀 지리·수치** 정보를 HTML 프론트엔드 라이브러리로 렌더링합니다. FLUX의 부하를 낮추고 정보 정확도를 보장합니다.
+
+#### 2.3.1 template.html 라이브러리 통합
+
+- **지도**: Apache ECharts (지도 모듈 분리 빌드, 약 400KB) — 누아르 테마 커스터마이징 용이
+- **차트**: Chart.js (~200KB) — 막대/꺾은선/도넛/계기판 모두 지원
+- **번들 최적화 (E-1):**
+  - `<link rel="preload">` + Chrome 영구 캐시 활용으로 챕터 간 캐시 공유
+  - ECharts는 지도 모듈만 빌드 (전체 900KB → 약 400KB)
+- **GeoJSON 데이터셋**: `shared_assets/geo/world.geo.json` (국가별 ISO3 코드), `shared_assets/geo/regions.geo.json` (중동/동아시아 등 지역 정의)
+
+#### 2.3.2 시간 결정론 강제 (C-5 최종 결정)
+
+ECharts/Chart.js는 **반드시 자체 애니메이션 OFF + GSAP 외부 제어**:
+
+```js
+// 내부 애니메이션 OFF
+chart.setOption({
+  animation: false,
+  series: [...],
+});
+
+// GSAP 마스터 타임라인이 외부에서 진행 제어
+masterTL.to({ progress: 0 }, {
+  progress: 1,
+  duration: 2.0,
+  ease: 'power2.out',
+  onUpdate: function () {
+    const p = this.targets()[0].progress;  // 0 → 1
+    chart.setOption({
+      series: [{
+        data: data.slice(0, Math.floor(data.length * p)),  // 점차 데이터 추가
+      }],
+    }, { lazyUpdate: true, notMerge: false });
+  },
+}, scene.start_time + dataLayer.appear_time);
+```
+
+**3단계 표준 시퀀스 강제** (씬마다 동일하게 적용):
+
+1. **페이드인** (0.3~0.5초): `opacity 0 → 1`, `display:none` 해제
+2. **메인 애니메이션** (0.5~2.0초): 데이터 progressive 갱신, `power2.out` / `expo.out` / `power3.inOut` 권장 (`linear` 금지 — 기계적)
+3. **강조 펄스** (마지막 0.3초): `scale 1 → 1.05 → 1`, 시청자 시선 고정
+
+#### 2.3.3 Node 3 출력 스키마 — `data_layer` 필드
+
+씬에 데이터 시각화가 필요할 때 LLM이 다음 형식으로 출력 (모든 시간값은 **씬 내부 0초 기준** — W-5):
+
+```json
+"data_layer": {
+  "type": "map",
+  "focus_region": "Middle_East",
+  "highlight": [
+    { "country": "IRN", "color": "#FF4500" },
+    { "country": "SAU", "color": "#00FFAA" }
+  ],
+  "route": { "from": "IRN", "to": "KOR", "via": ["HRM"], "style": "dashed_arrow" },
+  "appear_time": 2.5,
+  "duration": 8.0
+}
+```
+
+또는 차트 형식:
+
+```json
+"data_layer": {
+  "type": "chart",
+  "chart_type": "line",
+  "title": "WTI 유가 ($)",
+  "data": [{ "x": "2020", "y": 41 }, { "x": "2024", "y": 78 }],
+  "highlight_x": "2022",
+  "appear_time": 4.0,
+  "duration": 6.0
+}
+```
+
+#### 2.3.4 template.html 렌더 모듈 신설
+
+신규 z-index 레이어 `data-viz-layer`(`var(--z-data-viz)` = 850)를 추가하고, ECharts/Chart.js 인스턴스를 GSAP 마스터 타임라인에 연동.
+
+#### 2.3.5 데이터 정확성 검증 (Validation Layer)
+
+- `country` 코드는 ISO 3166-1 alpha-3 화이트리스트 검증
+- 차트 `data` 배열은 길이/타입 검증 후 렌더 (LLM 환각 방어)
+- 검증 실패 시 해당 `data_layer`만 비활성화 + 경고 로그 + 더미 검은 배경 (씬 자체는 유지)
+
+---
+
+### 2.4 코믹 패널 및 이펙트 연출 시스템
+
+극주부도식 다이내믹 컷 연출과 지식해적단식 만화적 강조 효과를 GSAP/CSS 기반으로 구현합니다.
+
+#### 2.4.1 편집 친화 DOM 구조 (C-3 최종 결정)
+
+모든 시각 객체는 처음부터 **독립 레이어 + `data-edit-id`**를 갖고, panel 계층은 layout이 없어도 항상 존재 (1패널 폴백):
+
+```
+viewport
+└─ scene-container (카메라 제어)
+   └─ scene-group (씬 1개 = 1개 그룹, .active 상태일 때만 표시)
+      ├─ panel-container          ← v4.5 신설, layout 없으면 panel 1개로 폴백
+      │  ├─ panel[panel_id]       ← clip-path 적용 단위
+      │  │  ├─ bg-layer            data-edit-id="scene_03_panel_a_bg"
+      │  │  ├─ props-layer
+      │  │  │  └─ prop[scene_asset_id]      data-edit-id="scene_03_prop_01"
+      │  │  ├─ character-layer
+      │  │  │  └─ character[scene_asset_id] data-edit-id="scene_03_character_01"
+      │  │  ├─ data-viz-layer     data-edit-id="scene_03_dataviz"
+      │  │  └─ foreground-layer   data-edit-id="scene_03_foreground"
+      │  └─ panel[panel_id_b] ...
+      └─ scene-effects-layer     (씬 단위 만화 이펙트, 패널 위)
+```
+
+**모든 엔진의 panel-aware 수정 의무 (template.html [15]~[19] 모듈에 반영):**
+
+- `applyParallax(scene, x, y)` → 패널별 추가 오프셋 지원
+- `buildLipsyncTimeline` → `panel[].character[]` 순회 + 활성 캐릭터(`data-active="true"`)만 (C-4 결합)
+- `buildTypographyTimeline` → 키네틱 타이포는 **씬 단위**(panel 위)이므로 panel-container 밖에 배치
+- `spawnAmbientParticles` → 씬 단위 그대로 (panel 위 오버레이)
+
+**편집 모드 진입 시:**
+
+- GSAP transform을 inline style로 freeze
+- 사용자가 객체 드래그 → inline style 갱신 → delta JSON에 저장
+- 다음 빌드 시 Node 10이 delta를 GSAP timeline의 `set()` 초기값으로 주입
+
+#### 2.4.2 화면 분할(Comic Panel) 레이아웃 엔진
+
+- template.html에 `clip-path` 기반 분할 레이아웃 6종 사전 정의:
+  - `split_diagonal` (대각선 양분), `split_vertical` (좌우), `split_horizontal` (상하), `split_3panel` (3분할), `split_corner` (한 모서리 작은 컷), `split_focus_zoom` (메인 컷 + 작은 인서트)
+- Node 3 출력 스키마 (모든 시간값 씬 내부 0초 기준 — W-5):
+
+```json
+"layout": {
+  "type": "split_diagonal",
+  "panels": [
+    { "panel_id": "left", "scene_assets_ref": "scene_03_panel_a", "slide_in": "from_left" },
+    { "panel_id": "right", "scene_assets_ref": "scene_03_panel_b", "slide_in": "from_right" }
+  ],
+  "trigger_time": 1.2,
+  "duration": 4.5
+}
+```
+
+- 각 패널은 독립적인 캐릭터/배경 에셋 사용 가능. GSAP가 분할선 애니메이션 + 패널별 슬라이드인 + 충격 효과 연출.
+
+#### 2.4.3 코드 기반 만화 이펙트 (CSS/SVG/GSAP)
+
+사전 정의 이펙트 — 60fps 애니메이션 또는 화면 전체 오버레이형:
+
+| 이펙트 ID                | 설명                           | 트리거 조건             |
+| ------------------------ | ------------------------------ | ----------------------- |
+| `speed_lines_radial`     | 방사형 집중선 (단일 인물 강조) | 캐릭터 개인의 결의/분노 |
+| `speed_lines_horizontal` | 수평 속도선 (이동/돌진감)      | 빠른 이동, 추격         |
+| `impact_flash`           | 흰색 단발 섬광 (1프레임)       | 타격/충격 순간          |
+| `screen_shake_low`       | 카메라 컨테이너 미세 진동      | 일반 강조               |
+| `screen_shake_high`      | 카메라 강한 진동               | 폭발/충격               |
+| `vignette_pulse`         | 비네팅 강도 맥동               | 긴장 고조               |
+| `ink_splash`             | SVG 잉크 튀김 마스크 전환      | 씬 전환                 |
+| `panel_burst`            | 만화 컷 가장자리 방사 효과     | 분할 패널 등장 시       |
+| `sweat_drop`             | 땀방울 SVG 애니메이션          | 당황/긴장               |
+| `anger_vein`             | 분노 마크(혈관) SVG            | 분노 강조               |
+
+Node 3가 씬마다 0~3개 이펙트를 다음 형식으로 호출 (모든 시간값 씬 내부 0초 기준):
+
+```json
+"manga_effects": [
+  { "effect": "speed_lines_radial", "start_time": 3.2, "duration": 1.0 },
+  { "effect": "impact_flash", "start_time": 3.4, "duration": 0.1 }
+]
+```
+
+#### 2.4.4 신규 이펙트 자동 발전
+
+- LLM이 라이브러리에 없는 효과 필요 시 `manga_effects[].effect: "custom"` + `description`(자연어) 출력.
+- `description`이 "사실적인 폭발 구름" 같은 **이미지/디테일 기반** → FLUX 배경 생성 프롬프트에 자동 머지 (Node 4가 ambient/배경 프롬프트에 추가).
+- `description`이 "화면 우상단에서 좌하단으로 휘어지는 충격파" 같은 **모션/오버레이** → 향후 라이브러리 보강 후보로 누적 기록.
+
+#### 2.4.5 Instant Swapping 강화 — emotion_timeline (E-4 제한 적용)
+
+v4.0의 "즉각적 포즈/표정 스위칭"을 정식 스키마로 부활:
+
+```json
+"emotion_timeline": [
+  { "time": 0.0, "asset": "character_01_normal" },
+  { "time": 3.5, "asset": "character_01_angry" },
+  { "time": 7.2, "asset": "character_01_smirk" }
+]
+```
+
+- Node 4는 emotion_timeline의 각 asset마다 동일 시드 + 동일 FaceID + 표정 프롬프트만 변경하여 ComfyUI 호출.
+- template.html은 `time` 시점에 GSAP `steppedEase(0)` 또는 즉시 opacity 토글로 0초 만에 교체.
+
+**E-4 제한 강제** (Node 3 시스템 프롬프트에 명문화):
+
+> "emotion_timeline은 **감정이 명확히 변하는 씬에만** 사용하라. **챕터당 최대 2씬 이하**로 제한한다. 한 씬 안에서 표정 자산은 **최대 3장 이내**. 부하 가중을 막기 위해 의례적인 발화 씬에는 emotion_timeline을 출력하지 마라."
+
+#### 2.4.6 z-index 일원화 (E-5 최종 결정)
+
+template.html 상단에 CSS 변수로 z-index 매핑 일원화:
+
+```css
+:root {
+  --z-bg: 1;
+  --z-props: 50;
+  --z-character: 100;
+  --z-foreground: 200;
+  --z-watermark: 500;
+  --z-subtitle: 600;
+  --z-vfx-vignette: 700;
+  --z-vfx-flicker: 710;
+  --z-typography: 800;
+  --z-data-viz: 850; /* v4.5 신설 */
+  --z-ambient: 900;
+  --z-scene-effects: 950; /* v4.5 신설 — manga_effects 씬 단위 */
+  --z-transition: 1000;
+}
+```
+
+신규 v4.5 레이어는 모두 이 변수에서 할당. 직접 숫자 사용 금지.
+
+---
+
+### 2.5 듀얼 명령 시스템 (Dual-Command Choreography)
+
+LLM이 한 씬에 **FLUX 생성 + 코드 이펙트**를 동시에 지시 가능. 예: "배경에 거대한 폭발 구름(FLUX)" + "화면 강한 흔들림(GSAP)" + "붉은 섬광(CSS)".
+
+각 명령은 독립적 채널이며 Node 10에서 단일 씬 객체 안에 머지:
+
+```json
+{
+  "scene_id": "scene_07",
+  "asset_prompts": [
+    { "asset_type": "background", "prompt": "massive explosion cloud over Hormuz strait" }
+  ],
+  "manga_effects": [
+    { "effect": "screen_shake_high", "start_time": 1.0, "duration": 0.6 },
+    { "effect": "impact_flash", "start_time": 1.0, "duration": 0.1 }
+  ],
+  "manga_overlay_color": "rgba(255,80,40,0.25)"
+}
+```
+
+**W-6 보정**: `background_prompt` 신규 필드를 폐기하고, **기존 v4.0 Node 4의 `asset_prompts[].asset_type:"background"` 채널을 그대로 사용**. v4.5 §2.5는 단지 "동일 씬에 배경 프롬프트와 이펙트가 함께 있을 수 있다"는 설명만 유지.
+
+---
+
+### 2.6 시간 좌표계 통일 (W-5 최종 결정)
+
+v4.5에서 신설된 모든 시간 필드는 **씬 내부 0초 기준**으로 출력:
+
+| 필드                                                     | 단위             | Node 10 변환                                                |
+| -------------------------------------------------------- | ---------------- | ----------------------------------------------------------- |
+| `data_layer.appear_time`, `data_layer.duration`          | 씬 내부 0초 기준 | 머지 시 `scene.start_time + appear_time`으로 챕터 좌표 변환 |
+| `layout.trigger_time`, `layout.duration`                 | 씬 내부 0초 기준 | 동일                                                        |
+| `manga_effects[].start_time`, `manga_effects[].duration` | 씬 내부 0초 기준 | 동일                                                        |
+| `emotion_timeline[].time`                                | 씬 내부 0초 기준 | 동일                                                        |
+
+- **씬이 작은 단위라 LLM이 출력하기 자연스럽고**, Node 10이 씬 머지 시 `scene.start_time + offset`으로 챕터 좌표(GSAP 마스터 타임라인 입력)로 자동 변환.
+- v4.0에서 이미 챕터 내부 0초 기준이던 필드(`scene.start_time`, `scene.end_time`, `scene.lipsync[].start/end`, `scene.kinetic_typography.appear_time/duration`)는 **그대로 챕터 기준 유지** — Node 10이 이중 변환하지 않도록 명세에 표로 명시.
+
+---
+
+## 3. 노드별 역할 가이드 (LLM 감독 지침)
+
+### Node 3 (Plan LLM) — 연출 감독
+
+새로 부여되는 결정권:
+
+- 씬마다 **`data_layer`** 필요 여부 (지도/차트 vs 일반 일러스트)
+- 씬마다 **`layout`** 결정 (단일 풀스크린 vs 코믹 패널 분할)
+- 씬마다 **`manga_effects[]`** 0~3개 선정
+- 씬마다 **`emotion_timeline`** 작성 (챕터당 최대 2씬)
+- 캐릭터 액션 컷마다 **`pose`** 결정 (`auto` 70% / `controlled` 20% / 나머지 10%)
+
+### Node 4 (Prompt LLM) — 시각 설계
+
+새로 부여되는 결정권:
+
+- 카테고리 5단계 검색 우선순위 적용 (W-1)
+- `match_score` 출력 강제 (0.7 미만이면 다음 순위 폴백)
+- 임베딩 검색 후 매칭 시 `reuse_asset_id`로 출력 (L1 합류)
+- 신규 생성 시 `description_search` + `description_render` + `tags[]` 강제 출력 (Node 8.5 자동 등재용)
+- `pose: "auto"` 또는 `pose: "<id>"` 매칭 + character variant 자동 선택
+
+### Node 7 (ComfyUI Renderer) — 분기 확장
+
+- `pose != "auto"` → ControlNet OpenPose 활성화, IP-Adapter weight 0.35
+- `pose == "auto"` → 기존 워크플로우 그대로
+- L3 SHA1 캐시 히트 시 호출 스킵
+
+### Node 8.5 (Asset Archiver) — 위치: Node 9 직후 (C-1)
+
+- `generate_asset: true` 마킹 산출물만 대상
+- File Lock 보호 + 사본을 `assets/static/auto_generated/`에 저장
+- 카탈로그 갱신 메타데이터: asset_id / description_search / description_render / tags / created_at / usage_count / source_video_id / seed / lora_signature / style_anchor_version
+
+### Node 10 (Master Assembler) — 스키마 확장
+
+DATA.scenes[]에 v4.5 신규 4개 필드 머지:
+
+- `scene.data_layer` (씬 내부 시간을 챕터 시간으로 변환)
+- `scene.layout` (panel-aware DOM 빌드 정보)
+- `scene.manga_effects[]` (씬 내부 시간 → 챕터 시간 변환)
+- `scene.emotion_timeline[]` (씬 내부 시간 → 챕터 시간 변환)
+
+### template.html — 렌더 모듈 신설
+
+- `[15] Data Viz Engine` (ECharts + Chart.js, 자체 애니메이션 OFF, 3단계 표준 시퀀스)
+- `[16] Comic Panel Layout Engine` (clip-path, panel-aware DOM)
+- `[17] Manga Effects Engine` (10종 사전 정의 + custom 분기)
+- `[18] Emotion Swap Engine` (active-only 필터링, lipsync와 결합)
+- `[19] Edit-Mode Hooks` (data-edit-id 기반 hit-test, GSAP freeze, 과제 6 연계)
+
+---
+
+## 4. v4.0 대비 추가 디벨롭 과제 (작업 단위)
+
+| 과제           | 위치                                                                                                             | 우선순위 |
+| -------------- | ---------------------------------------------------------------------------------------------------------------- | -------- |
+| 과제 7         | `assets/poses/` + `shared_assets/pose_library.json` 초기 15종 (정보성 채널 균형)                                 | 중       |
+| 과제 8         | `references_catalog.json` 스키마 확장 (4 카테고리 + global_style_anchor + style_anchor_version + lora_signature) | 상       |
+| 과제 9         | `assets/static/` 운영자 수동 등재 초기 세트 (국기·화살표·X표·느낌표 등 20~30개)                                  | 상       |
+| 과제 10        | Node 8.5 Asset Archiver (Node 9 직후, File Lock 포함) 구현                                                       | 상       |
+| 과제 11        | Node 4 재사용 검색 로직 (description_search 임베딩 + tags 매칭, hnswlib 트리거)                                  | 중       |
+| 과제 12        | Node 7 ControlNet 분기 워크플로우 (ComfyUI)                                                                      | 상       |
+| 과제 13        | template.html [15] Data Viz Engine (ECharts 지도 모듈만 + Chart.js, 내부 애니메이션 OFF)                         | 상       |
+| 과제 14        | template.html [16] Comic Panel Layout Engine (panel-aware DOM 포함)                                              | 중       |
+| 과제 15        | template.html [17] Manga Effects Engine (10종 사전 정의 + z-index 변수화)                                        | 중       |
+| 과제 16        | template.html [18] Emotion Swap Engine (active-only 필터링)                                                      | 중       |
+| 과제 17        | Node 3 프롬프트 갱신 (5개 신규 결정권 + 70/20/10 비율 + 챕터당 2씬 제한)                                         | 상       |
+| 과제 18        | Node 4 프롬프트 갱신 (5계층 우선순위 + match_score + description_search/render 분리)                             | 상       |
+| 과제 19        | Node 10 머지 로직 확장 (data_layer / layout / manga_effects / emotion_timeline + 시간 좌표 변환)                 | 상       |
+| 과제 20        | `shared_assets/geo/world.geo.json` 등 GeoJSON 데이터셋 구축 (누아르 색상 프리셋 포함)                            | 중       |
+| 과제 21 (신설) | template.html [19] Edit-Mode Hooks (data-edit-id, GSAP freeze, 과제 6 연계)                                      | 중       |
+
+---
+
+## 5. 작업 의존 그래프 및 권장 순서 (E-6 최종 결정)
+
+### 의존 그래프
+
+```
+[데이터 컨트랙트 트랙]
+  과제 8 (카탈로그 스키마)
+    ↓
+  과제 19 (Node 10 머지 확장)
+    ↓
+  과제 17 (Node 3 프롬프트), 과제 18 (Node 4 프롬프트)
+
+[template.html 트랙 — 병렬 가능]
+  과제 13 (Data Viz)
+  과제 14 (Comic Panel + panel-aware DOM)
+  과제 15 (Manga Effects + z-index 변수화)
+  과제 16 (Emotion Swap)
+  과제 21 (Edit-Mode Hooks)
+    ↓
+  과제 6 (모션 코믹 편집기 — Phase F에서 진행)
+
+[운영 자산 트랙 — 병렬 가능]
+  과제 7 (포즈 라이브러리 15종)
+  과제 9 (정적 에셋 20~30개)
+  과제 20 (GeoJSON)
+
+[ComfyUI 트랙]
+  과제 12 (Node 7 ControlNet 분기)
+
+[자가 발전 트랙]
+  과제 8 → 과제 10 (Asset Archiver)
+                ↓
+            과제 11 (재사용 검색)
+```
+
+### 권장 작업 순서
+
+| Phase                              | 작업                        | 이유                                                               |
+| ---------------------------------- | --------------------------- | ------------------------------------------------------------------ |
+| **A — 데이터 컨트랙트**            | 과제 8 → 과제 19            | 모든 후속 과제의 전제 조건. 스키마 미정 시 모두 placeholder로 멈춤 |
+| **B — LLM 지침**                   | 과제 17 + 과제 18           | 데이터 컨트랙트 위에 LLM 출력 형태 확정                            |
+| **C — 렌더 엔진 일괄 (병렬)**      | 과제 13 / 14 / 15 / 16 / 21 | template.html 한 파일을 한 번 열고 닫으며 일관성 유지              |
+| **D — 운영 자산 수동 작업 (병렬)** | 과제 7 / 9 / 20             | 시간이 오래 걸리지만 코드 의존 없음. 다른 트랙과 병렬 진행 가능    |
+| **E — ComfyUI 분기**               | 과제 12                     | Phase A·B 완료 후, 실제 ComfyUI 워크플로우 수정                    |
+| **F — 자동화 폐쇄 루프**           | 과제 10 → 과제 11           | Asset Archiver가 카탈로그 채워야 재사용 검색이 의미 있음           |
+| **G — 미리보기 편집기**            | 과제 6                      | Phase C의 과제 21이 Edit-Mode Hooks를 깔아둔 뒤 진행               |
+
+**Phase A·B가 완료되어야 다른 모든 페이즈 진입 가능.** Phase C·D·E·F는 상호 독립이라 병렬 실행 가능.
+
+---
+
+## 6. 리스크 및 최적화 메모
+
+### 6.1 ECharts/Chart.js 번들 크기 (E-1)
+
+- 초기 로드 약 600KB (Chart.js 200KB + ECharts 지도 모듈 400KB)
+- `<link rel="preload">` + Chrome 영구 캐시 활용으로 챕터 간 캐시 공유
+- ECharts 전체(~900KB) 대신 지도 모듈만 분리 빌드 권장
+
+### 6.2 ControlNet VRAM 부담
+
+- Intel Arc 8.9GB 한계 근접 가능 → §1.2 batch=1 직렬 처리 정책으로 방어
+- ControlNet 활성 시 1장당 생성 시간 +5~10초 예상
+
+### 6.3 emotion_timeline 부하 가중 (E-4)
+
+- 한 씬 ComfyUI 호출이 1→3으로 증가 가능
+- E-4 제한(챕터당 2씬, 씬당 3장 이하) 강제 + L3 SHA1 캐시로 방어
+
+### 6.4 카탈로그 비대화 (E-3)
+
+- `usage_count == 0`이고 6개월 이상 미사용 → 운영자 수동 청소 (자동 삭제 금지)
+- 카탈로그 200개 초과 시 hnswlib 도입 자동 알림
+
+### 6.5 헤드리스 Chromium SVG 필터 처리 속도
+
+- HyperFrames 렌더 시 `manga_effects` 중 SVG 기반(`ink_splash`, `panel_burst`)이 일부 느릴 수 있음
+- 본 렌더 시간 5~15% 증가 예상 → 미리보기 모드에서는 영향 적음
+
+### 6.6 글로벌 화풍 앵커 갱신 시 톤 충돌
+
+- 갱신 시점 이전 `auto_generated_assets`에 `style_anchor_version` 미스매치 발생
+- 매칭 후보에서 우선순위 강등(자동 제외 아님 — 점진적 폐기)
+- 운영자가 갱신 시 카탈로그 일괄 점검 권장 (1회)
+
+### 6.7 LoRA 변경 시 화풍 충돌
+
+- `auto_generated_assets`에 `lora_signature` 기록
+- 다른 LoRA 영상에서는 매칭 후보에서 자동 제외 (Node 4 검색 로직)
+
+---
+
+## 7. 구현 가능성 검토 요약
+
+| 기능                     | 구현 가능성 | 핵심 리스크                                                |
+| ------------------------ | ----------- | ---------------------------------------------------------- |
+| 2.1 하이브리드 포즈 제어 | ✅ 가능     | ControlNet으로 인한 VRAM 사용량 증가 (직렬 처리로 방어)    |
+| 2.2 자가 발전 라이브러리 | ✅ 가능     | 임베딩 검색 비용 (hnswlib로 방어) + 운영자 수동 청소 필수  |
+| 2.3 데이터 시각화        | ✅ 가능     | ECharts/Chart.js 자체 애니메이션 OFF + GSAP 외부 제어 강제 |
+| 2.4 코믹 패널·이펙트     | ✅ 가능     | 헤드리스 Chromium SVG 필터 5~15% 시간 증가                 |
+| 2.5 듀얼 명령            | ✅ 가능     | 단순 스키마 확장                                           |
+
+**총평**: 본 명세의 5대 기능을 모두 구현하면 v4.0 대비 약 50~70% 추가 개발 분량이지만, 결과물은 지식해적단·극주부도 수준의 정보성+연출력을 동시에 자동화할 수 있는 하이엔드 파이프라인이 됩니다. AI 창의성을 가두지 않으면서 시스템 통제력을 부여하는 구조이므로 LLM 모델이 발전할수록 결과물이 자연스럽게 같이 발전합니다.

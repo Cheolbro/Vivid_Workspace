@@ -1,0 +1,272 @@
+/**
+ * Embedding Search Layer — 과제 11 (Phase F)
+ *
+ * Node 4 / Node 9.5 / 미래 Node 11+에서 공용으로 사용하는 임베딩 검색 레이어.
+ * 처음부터 hnswlib 도입 (단계적 도입 폐기, 영상 1편이든 100편이든 동일 검색 로직).
+ *
+ * 검색 구조 (BN-5):
+ *   1. 카테고리 분할 — 검색 대상 N을 1/4로 축소
+ *      (auto_generated_assets만 hnswlib 대상; characters/props/static_assets는 별도 티어)
+ *   2. hnswlib 코사인 그래프 탐색 — references_catalog.idx
+ *   3. 매칭 기준: description_search 코사인 유사도 ≥ 0.85
+ *      OR 핵심 태그 3개 이상 일치 (임베딩 폴백 안전망)
+ *
+ * 임베딩 모델:
+ *   - sentence-transformers/all-MiniLM-L6-v2 (384차원, CPU 100ms/쿼리)
+ *   - 정규화된 벡터 → inner product = cosine similarity
+ *
+ * 인덱스 동기화 보장:
+ *   - Node 9.5가 항목 추가 시 동시 addPoint
+ *   - 인덱스와 카탈로그 entry 라벨 매핑은 별도 sidecar JSON으로 관리
+ *     (idx 자체는 정수 라벨만 지원 → asset_id 매핑 필요)
+ *
+ * 레이블 매핑 sidecar: references_catalog.idx.labels.json
+ *   { "next_label": 42, "labels": { "<auto_id>": 0, "<auto_id2>": 1, ... } }
+ *
+ * 환경: hnswlib-node 옵셔널 (미설치 시 카테고리 분할 + 코사인 직접 계산 폴백).
+ */
+
+const fs = require("fs");
+const path = require("path");
+const { spawnSync } = require("child_process");
+
+const EMBEDDING_THRESHOLD = 0.85;
+const TAG_MATCH_THRESHOLD = 3;
+const EMBEDDING_DIM = 384;
+
+// ──────────────────────────────────────────────
+// 임베딩 호출
+// ──────────────────────────────────────────────
+
+const EMBEDDING_SCRIPT = `
+import sys, json
+from sentence_transformers import SentenceTransformer
+m = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+texts = json.loads(sys.stdin.read())
+v = m.encode(texts, normalize_embeddings=True).tolist()
+print(json.dumps(v))
+`;
+
+function embedTexts(texts) {
+  if (!Array.isArray(texts) || texts.length === 0) return [];
+  const result = spawnSync("python", ["-c", EMBEDDING_SCRIPT], {
+    input: JSON.stringify(texts),
+    encoding: "utf-8",
+    maxBuffer: 100 * 1024 * 1024,
+    timeout: 60_000,
+  });
+  if (result.status !== 0) {
+    throw new Error(`[embedding_search] 임베딩 호출 실패: ${result.stderr}`);
+  }
+  return JSON.parse(result.stdout.trim());
+}
+
+function cosine(a, b) {
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  return dot;
+}
+
+// ──────────────────────────────────────────────
+// 라벨 sidecar I/O
+// ──────────────────────────────────────────────
+
+function labelsPath(indexPath) {
+  return `${indexPath}.labels.json`;
+}
+
+function loadLabels(indexPath) {
+  const p = labelsPath(indexPath);
+  if (!fs.existsSync(p)) return { next_label: 0, labels: {}, reverse: {} };
+  const raw = JSON.parse(fs.readFileSync(p, "utf-8"));
+  const reverse = {};
+  for (const [assetId, label] of Object.entries(raw.labels || {})) {
+    reverse[label] = assetId;
+  }
+  return { next_label: raw.next_label || 0, labels: raw.labels || {}, reverse };
+}
+
+function saveLabels(indexPath, state) {
+  fs.writeFileSync(
+    labelsPath(indexPath),
+    JSON.stringify({ next_label: state.next_label, labels: state.labels }, null, 2),
+    "utf-8"
+  );
+}
+
+// ──────────────────────────────────────────────
+// hnswlib (옵셔널)
+// ──────────────────────────────────────────────
+
+function tryLoadHnsw() {
+  try {
+    return require("hnswlib-node");
+  } catch (_) {
+    return null;
+  }
+}
+
+function openIndex(indexPath, dim = EMBEDDING_DIM) {
+  const hnswlib = tryLoadHnsw();
+  if (!hnswlib) return null;
+  const index = new hnswlib.HierarchicalNSW("cosine", dim);
+  if (fs.existsSync(indexPath)) {
+    index.readIndexSync(indexPath);
+  } else {
+    index.initIndex(1024);
+  }
+  return index;
+}
+
+function addToIndex(indexPath, assetId, embedding, dim = EMBEDDING_DIM) {
+  const index = openIndex(indexPath, dim);
+  const state = loadLabels(indexPath);
+  if (!index) {
+    // 폴백: hnswlib 없을 때 → 라벨만 기록 (검색은 코사인 직접 계산으로 진행)
+    if (!(assetId in state.labels)) {
+      state.labels[assetId] = state.next_label++;
+      saveLabels(indexPath, state);
+    }
+    return { ok: true, fallback: "no_hnswlib", label: state.labels[assetId] };
+  }
+  if (assetId in state.labels) {
+    return { ok: true, label: state.labels[assetId], note: "already_indexed" };
+  }
+  const label = state.next_label++;
+  index.addPoint(embedding, label);
+  index.writeIndexSync(indexPath);
+  state.labels[assetId] = label;
+  saveLabels(indexPath, state);
+  return { ok: true, label };
+}
+
+// ──────────────────────────────────────────────
+// 태그 폴백 매칭 (핵심 태그 3개 이상 일치)
+// ──────────────────────────────────────────────
+
+function tagMatchScore(queryTags, candidateTags) {
+  if (!Array.isArray(queryTags) || !Array.isArray(candidateTags)) return 0;
+  const q = new Set(queryTags.map((t) => String(t).toLowerCase()));
+  let hit = 0;
+  for (const t of candidateTags) {
+    if (q.has(String(t).toLowerCase())) hit++;
+  }
+  return hit;
+}
+
+// ──────────────────────────────────────────────
+// 카테고리 분할 임베딩 검색 (auto_generated_assets 대상)
+//
+// 입력:
+//   catalog: references_catalog.json 객체
+//   indexPath: idx 파일 경로 (없으면 fallback)
+//   query: { description_search, tags }
+//
+// 출력: { hit, score, asset_id, entry, source } | { hit:null, log }
+// ──────────────────────────────────────────────
+
+function searchAutoGenerated({ catalog, indexPath, query, embedFn = embedTexts }) {
+  const candidates = Object.entries(catalog.auto_generated_assets || {}).filter(
+    ([k]) => !k.startsWith("_")
+  );
+  if (candidates.length === 0) {
+    return { hit: null, log: { tier: 3, n: 0, reason: "no_auto_generated_assets" } };
+  }
+
+  // 1차: 핵심 태그 3개 이상 일치 (임베딩 비용 절약)
+  if (Array.isArray(query.tags) && query.tags.length >= TAG_MATCH_THRESHOLD) {
+    let bestTag = { score: 0, key: null, entry: null };
+    for (const [key, entry] of candidates) {
+      const s = tagMatchScore(query.tags, entry.tags);
+      if (s > bestTag.score) bestTag = { score: s, key, entry };
+    }
+    if (bestTag.score >= TAG_MATCH_THRESHOLD) {
+      return {
+        hit: { asset_id: bestTag.key, entry: bestTag.entry, score: 1.0, source: "tag_match" },
+        log: { tier: 3, n: candidates.length, tag_hits: bestTag.score },
+      };
+    }
+  }
+
+  // 2차: 임베딩 코사인 ≥ 0.85
+  let queryVec;
+  try {
+    [queryVec] = embedFn([query.description_search]);
+  } catch (e) {
+    return {
+      hit: null,
+      log: { tier: 3, n: candidates.length, reason: `embed_failed:${e.message}` },
+    };
+  }
+
+  const hnswlib = tryLoadHnsw();
+  if (hnswlib && fs.existsSync(indexPath)) {
+    try {
+      const index = openIndex(indexPath, queryVec.length);
+      const state = loadLabels(indexPath);
+      const k = Math.min(8, index.getCurrentCount());
+      if (k > 0) {
+        const r = index.searchKnn(queryVec, k);
+        for (let i = 0; i < r.distances.length; i++) {
+          const sim = 1 - r.distances[i]; // cosine 거리 → 유사도
+          const label = r.neighbors[i];
+          const assetId = state.reverse[label];
+          if (assetId && sim >= EMBEDDING_THRESHOLD) {
+            const entry = (catalog.auto_generated_assets || {})[assetId];
+            if (entry) {
+              return {
+                hit: { asset_id: assetId, entry, score: sim, source: "hnswlib" },
+                log: { tier: 3, n: candidates.length, hnsw_k: k, top_sim: sim },
+              };
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // hnswlib 검색 실패 — 폴백으로 진행
+    }
+  }
+
+  // 3차: 폴백 — 직접 코사인 (hnswlib 미설치 또는 idx 부재)
+  let candidateVecs;
+  try {
+    candidateVecs = embedFn(candidates.map(([, c]) => c.description_search));
+  } catch (e) {
+    return {
+      hit: null,
+      log: { tier: 3, n: candidates.length, reason: `embed_failed:${e.message}` },
+    };
+  }
+  let best = { score: 0, idx: -1 };
+  for (let i = 0; i < candidates.length; i++) {
+    const s = cosine(queryVec, candidateVecs[i]);
+    if (s > best.score) best = { score: s, idx: i };
+  }
+  if (best.idx >= 0 && best.score >= EMBEDDING_THRESHOLD) {
+    const [assetId, entry] = candidates[best.idx];
+    return {
+      hit: { asset_id: assetId, entry, score: best.score, source: "fallback_cosine" },
+      log: { tier: 3, n: candidates.length, top_sim: best.score },
+    };
+  }
+  return {
+    hit: null,
+    log: { tier: 3, n: candidates.length, top_sim: best.score, reason: "below_threshold" },
+  };
+}
+
+module.exports = {
+  embedTexts,
+  cosine,
+  tagMatchScore,
+  addToIndex,
+  searchAutoGenerated,
+  loadLabels,
+  saveLabels,
+  openIndex,
+  constants: {
+    EMBEDDING_THRESHOLD,
+    TAG_MATCH_THRESHOLD,
+    EMBEDDING_DIM,
+  },
+};

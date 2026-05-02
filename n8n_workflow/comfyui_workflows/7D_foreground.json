@@ -1,0 +1,115 @@
+{
+  "_meta": {
+    "title": "7D_foreground — text2img + 투명 PNG (FaceID/IP-Adapter 비활성)",
+    "version": "4.5.0",
+    "description": "전경 레이어 전용 ComfyUI 워크플로우. 카메라-피사체 사이 오브젝트(난간, 창문 프레임, 나뭇가지 등). FaceID/IP-Adapter 완전 비활성, 순수 text2img + 알파. zoom_rate: 1.25 메타데이터. Node 7 JS�� {{PLACEHOLDER}} 값을 동적 덮어쓰기."
+  },
+  "1": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "flux1-schnell-Q5_K_M.gguf"
+    }
+  },
+  "1c": {
+    "class_type": "DualCLIPLoaderGGUF",
+    "inputs": {
+      "clip_name1": "t5xxl_fp8.gguf",
+      "clip_name2": "clip_l.safetensors",
+      "type": "flux"
+    }
+  },
+  "1v": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "{{POSITIVE_PROMPT}}",
+      "clip": ["1c", 0]
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "watermark, text, signature, low quality, blurry, deformed",
+      "clip": ["1c", 0]
+    }
+  },
+  "4": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    }
+  },
+  "13": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "model": ["1", 0],
+      "clip": ["1c", 0],
+      "lora_name": "{{LORA_NAME}}",
+      "strength_model": "{{LORA_STRENGTH}}",
+      "strength_clip": "{{LORA_STRENGTH}}"
+    },
+    "_inject_defaults": {
+      "lora_name": "noir_webtoon_style.safetensors",
+      "strength": [0.6, 0.85]
+    }
+  },
+  "30": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["13", 0],
+      "positive": ["2", 0],
+      "negative": ["3", 0],
+      "latent_image": ["4", 0],
+      "seed": "{{SEED}}",
+      "steps": 3,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0
+    }
+  },
+  "31": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["30", 0],
+      "vae": ["1v", 0]
+    }
+  },
+  "40": {
+    "class_type": "LayeredDiffusionDecode",
+    "inputs": {
+      "image": ["31", 0],
+      "samples": ["30", 0]
+    },
+    "_comment": "투명 PNG 알파 분리"
+  },
+  "50": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["40", 0],
+      "filename_prefix": "{{OUTPUT_PREFIX}}"
+    }
+  },
+  "99": {
+    "class_type": "HttpRequest",
+    "inputs": {
+      "url": "{{N8N_RESUME_WEBHOOK}}",
+      "method": "POST",
+      "body": {
+        "resumeKey": "{{PROMPT_ID}}",
+        "file_path": "{{OUTPUT_FILE_PATH}}",
+        "asset_type": "foreground",
+        "zoom_rate": 1.25,
+        "status": "complete"
+      }
+    },
+    "_comment": "n8n ���훅 콜백 — resumeKey로 Node 8 세션 복구. zoom_rate 1.25은 패럴랙스 최고속."
+  }
+}
